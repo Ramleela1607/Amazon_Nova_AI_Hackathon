@@ -1,1 +1,6 @@
-
+streamlit
+boto3
+botocore
+pypdf
+faiss-cpu
+numpy
