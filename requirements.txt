@@ -4,3 +4,4 @@ botocore
 pypdf
 faiss-cpu
 numpy
+reportlab
