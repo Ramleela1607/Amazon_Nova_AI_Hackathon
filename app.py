@@ -21,54 +21,88 @@ st.set_page_config(page_title="Smart Document Copilot", layout="wide")
 # ---------- Premium UI (background + cards) ----------
 st.markdown("""
 <style>
-/* Full app background */
+/* ---------- Light theme + background image ---------- */
 .stApp {
-  background: radial-gradient(circle at 20% 10%, rgba(99,102,241,0.25), transparent 35%),
-              radial-gradient(circle at 80% 20%, rgba(16,185,129,0.20), transparent 40%),
-              linear-gradient(180deg, #0b1020 0%, #070a12 100%);
-  color: #e5e7eb;
+  /* SVG pattern background (embedded, no external URL) */
+  background-image:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='1200' height='800'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop stop-color='%23e0f2fe' offset='0'/><stop stop-color='%23fce7f3' offset='0.5'/><stop stop-color='%23ecfccb' offset='1'/></linearGradient></defs><rect width='1200' height='800' fill='url(%23g)'/><path d='M0,520 C220,460 420,610 650,540 C880,470 1020,570 1200,520 L1200,800 L0,800 Z' fill='%23ffffff' fill-opacity='0.55'/><path d='M0,600 C260,540 430,700 700,620 C940,550 1040,660 1200,610' stroke='%2399f6e4' stroke-width='18' stroke-opacity='0.35' fill='none'/><path d='M0,650 C280,590 470,740 760,660 C980,600 1090,700 1200,660' stroke='%23a5b4fc' stroke-width='14' stroke-opacity='0.30' fill='none'/></svg>");
+  background-size: cover;
+  background-attachment: fixed;
+  color: #111827 !important;
 }
 
-/* Sidebar style */
-section[data-testid="stSidebar"] {
-  background: linear-gradient(180deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.02) 100%);
-  border-right: 1px solid rgba(255,255,255,0.08);
+/* Make markdown/text readable */
+html, body, [class*="css"]  {
+  color: #111827 !important;
 }
 
-/* Containers spacing */
+/* Sidebar */
+section[data-testid="stSidebar"]{
+  background: rgba(255,255,255,0.72) !important;
+  backdrop-filter: blur(10px);
+  border-right: 1px solid rgba(17,24,39,0.08);
+}
+section[data-testid="stSidebar"] *{
+  color: #111827 !important;
+}
+
+/* Main container spacing */
 .block-container { padding-top: 1.2rem; }
 
-/* Metrics as cards */
+/* Cards for metrics */
 div[data-testid="stMetric"] {
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.82);
+  border: 1px solid rgba(17,24,39,0.10);
   padding: 14px;
   border-radius: 16px;
+  box-shadow: 0 8px 22px rgba(17,24,39,0.07);
+}
+
+/* Expanders */
+div[data-testid="stExpander"] {
+  border-radius: 16px;
+  border: 1px solid rgba(17,24,39,0.10);
+  background: rgba(255,255,255,0.78);
+  box-shadow: 0 8px 22px rgba(17,24,39,0.06);
 }
 
 /* Buttons */
 .stButton button {
   border-radius: 14px;
-  border: 1px solid rgba(255,255,255,0.12);
-  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(17,24,39,0.12);
+  background: rgba(255,255,255,0.85);
+  color: #111827 !important;
+  font-weight: 600;
 }
 .stButton button:hover {
-  border: 1px solid rgba(99,102,241,0.5);
+  border: 1px solid rgba(99,102,241,0.45);
+  box-shadow: 0 8px 20px rgba(99,102,241,0.18);
 }
 
-/* Expanders */
-div[data-testid="stExpander"] {
-  border-radius: 14px;
-  border: 1px solid rgba(255,255,255,0.10);
-  background: rgba(255,255,255,0.03);
+/* Inputs */
+div[data-baseweb="input"] input, textarea {
+  background: rgba(255,255,255,0.88) !important;
+  color: #111827 !important;
+  border-radius: 12px !important;
+  border: 1px solid rgba(17,24,39,0.14) !important;
 }
 
-/* Chat bubbles */
-div[data-testid="stChatMessage"] {
+/* Chat bubbles: ensure readable text */
+div[data-testid="stChatMessage"]{
+  background: rgba(255,255,255,0.80);
+  border: 1px solid rgba(17,24,39,0.10);
   border-radius: 16px;
+  box-shadow: 0 8px 18px rgba(17,24,39,0.05);
 }
+div[data-testid="stChatMessage"] *{
+  color: #111827 !important;
+}
+
+/* Links */
+a { color: #1d4ed8 !important; }
 </style>
 """, unsafe_allow_html=True)
+
 
 # ---------- Header ----------
 st.title("📄 Smart Document Copilot")
@@ -385,3 +419,4 @@ else:
             file_name="smart_doc_copilot_compare_report.pdf",
             mime="application/pdf",
         )
+
