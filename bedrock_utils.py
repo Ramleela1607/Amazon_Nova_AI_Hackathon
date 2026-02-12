@@ -1,14 +1,18 @@
 import json
-import boto3
-import re
 from typing import List, Dict, Any
 
-# Regions (as you already set)
-GEN_REGION = "ap-south-1"      # Nova Lite profile is here for you
-EMBED_REGION = "us-east-1"     # embeddings supported here
+import boto3
 
-# Use the inference profile ID you discovered
+# Regions
+GEN_REGION = "ap-south-1"   # Nova Lite inference profile is here for you
+EMBED_REGION = "us-east-1"  # embeddings supported here (your earlier setup)
+
+# IMPORTANT: use your inference profile ID (from your script output)
+# You confirmed this exists:
+#   ID: apac.amazon.nova-lite-v1:0
 NOVA_LITE_MODEL_ID = "apac.amazon.nova-lite-v1:0"
+
+# Multimodal embeddings model ID (works from EMBED_REGION)
 NOVA_MM_EMBED_MODEL_ID = "amazon.nova-2-multimodal-embeddings-v1:0"
 
 
@@ -17,6 +21,7 @@ def get_bedrock_runtime(region: str):
 
 
 def _find_first_float_list(obj):
+    """Walk nested dict/list to find first list of floats (embedding vector)."""
     if isinstance(obj, list):
         if obj and all(isinstance(x, (int, float)) for x in obj):
             return obj
@@ -32,8 +37,10 @@ def _find_first_float_list(obj):
     return None
 
 
-def embed_text(text: str, dim: int = 1024):
+def embed_text(text: str, dim: int = 1024) -> List[float]:
+    """Create an embedding for text via Nova Multimodal Embeddings."""
     brt = get_bedrock_runtime(EMBED_REGION)
+
     body = {
         "taskType": "SINGLE_EMBEDDING",
         "singleEmbeddingParams": {
@@ -49,6 +56,7 @@ def embed_text(text: str, dim: int = 1024):
         accept="application/json",
         contentType="application/json",
     )
+
     out = json.loads(resp["body"].read())
     vec = _find_first_float_list(out)
     if vec is None:
@@ -56,25 +64,40 @@ def embed_text(text: str, dim: int = 1024):
     return vec
 
 
-# ---------- NEW: Doc type detection + extraction schemas ----------
+# ---------------- Doc type + Extraction ----------------
 
 DOC_TYPES = ["auto", "resume", "invoice", "contract", "research_paper", "generic"]
 
 EXTRACTION_SCHEMAS = {
     "resume": {
-        "fields": ["name", "email", "phone", "location", "skills", "years_experience", "latest_role", "education", "certifications"],
+        "fields": [
+            "name", "email", "phone", "location",
+            "skills", "years_experience", "latest_role",
+            "education", "certifications"
+        ]
     },
     "invoice": {
-        "fields": ["vendor", "invoice_number", "invoice_date", "due_date", "total_amount", "currency", "line_items"],
+        "fields": [
+            "vendor", "invoice_number", "invoice_date",
+            "due_date", "total_amount", "currency", "line_items"
+        ]
     },
     "contract": {
-        "fields": ["parties", "effective_date", "end_date", "termination_clause", "payment_terms", "governing_law", "key_obligations", "risks"],
+        "fields": [
+            "parties", "effective_date", "end_date",
+            "termination_clause", "payment_terms", "governing_law",
+            "key_obligations", "risks"
+        ]
     },
     "research_paper": {
-        "fields": ["title", "authors", "abstract_summary", "methodology", "metrics", "key_results", "limitations", "future_work"],
+        "fields": [
+            "title", "authors", "abstract_summary",
+            "methodology", "metrics", "key_results",
+            "limitations", "future_work"
+        ]
     },
     "generic": {
-        "fields": ["summary", "key_points", "dates", "numbers", "entities"],
+        "fields": ["summary", "key_points", "dates", "numbers", "entities"]
     },
 }
 
@@ -82,12 +105,12 @@ EXTRACTION_SCHEMAS = {
 def detect_doc_type(doc_text: str) -> str:
     brt = get_bedrock_runtime(GEN_REGION)
     prompt = f"""
-Classify the document into exactly one type from this list:
+Classify the document into exactly ONE type from:
 resume, invoice, contract, research_paper, generic
 
-Return only the type word.
+Return ONLY the type word (no extra text).
 
-Document (excerpt):
+Document excerpt:
 {doc_text[:8000]}
 """
     resp = brt.converse(
@@ -95,7 +118,7 @@ Document (excerpt):
         messages=[{"role": "user", "content": [{"text": prompt}]}],
     )
     t = resp["output"]["message"]["content"][0]["text"].strip().lower()
-    # sanitize
+
     for allowed in ["resume", "invoice", "contract", "research_paper", "generic"]:
         if allowed in t:
             return allowed
@@ -109,10 +132,12 @@ def extract_fields_json(doc_text: str, doc_type: str = "auto") -> str:
         doc_type = detect_doc_type(doc_text)
 
     schema = EXTRACTION_SCHEMAS.get(doc_type, EXTRACTION_SCHEMAS["generic"])
+    fields = schema["fields"]
 
     prompt = f"""
 You are an information extraction assistant.
-Extract the fields for doc_type="{doc_type}" and output VALID JSON only.
+
+Extract fields for doc_type="{doc_type}" and output VALID JSON only.
 
 JSON format:
 {{
@@ -123,12 +148,13 @@ JSON format:
 }}
 
 Fields to extract:
-{schema["fields"]}
+{fields}
 
 Rules:
-- Output JSON only (no backticks).
+- Output JSON only (no backticks, no extra commentary).
 - If a field is missing, set it to null.
-- Keep lists as arrays.
+- For lists, use arrays.
+- confidence between 0 and 1.
 
 Document:
 {doc_text[:14000]}
@@ -140,19 +166,18 @@ Document:
     return resp["output"]["message"]["content"][0]["text"]
 
 
-# ---------- UPDATED: Ask + Evidence snippets ----------
+# ---------------- Q&A with short+insight + evidence ----------------
 
 def ask_with_evidence(question: str, context_chunks: List[str]) -> Dict[str, Any]:
     """
     Returns dict:
-    {
-      "answer": "...",
-      "sources_used": [1,3],
-      "evidence": [{"source":1,"quote":"..."}, ...]
-    }
+      {
+        "answer": "1-2 sentences",
+        "sources_used": [1,2],
+        "evidence": [{"source": 1, "quote": "..."}, ...]
+      }
     """
     brt = get_bedrock_runtime(GEN_REGION)
-
     sources_block = "\n\n".join([f"[Source {i+1}]\n{c}" for i, c in enumerate(context_chunks)])
 
     prompt = f"""
@@ -164,14 +189,19 @@ Return VALID JSON only in this schema:
   "answer": "string",
   "sources_used": [1,2],
   "evidence": [
-    {{"source": 1, "quote": "short exact snippet from Source 1"}},
-    {{"source": 2, "quote": "short exact snippet from Source 2"}}
+    {{"source": 1, "quote": "short exact snippet from Source 1"}}
   ]
 }}
 
-Rules:
-- evidence quotes must be copied EXACTLY from the sources (short).
-- If not found, set answer to "I don't know based on the document.", sources_used=[], evidence=[].
+Answer rules:
+- 1–2 sentences only.
+- Must include 1 useful insight (implication OR key number/metric OR takeaway).
+- No fluff, no repetition.
+- If not found: answer="I don't know based on the document.", sources_used=[], evidence=[].
+
+Evidence rules:
+- Provide 1–3 short quotes copied EXACTLY from sources.
+- Keep each quote short.
 
 SOURCES:
 {sources_block}
@@ -185,15 +215,13 @@ QUESTION:
     )
     txt = resp["output"]["message"]["content"][0]["text"]
 
-    # best-effort JSON parse
     try:
         return json.loads(txt)
     except Exception:
-        # fallback: return raw
         return {"answer": txt, "sources_used": [], "evidence": []}
 
 
-# ---------- NEW: Compare two documents ----------
+# ---------------- Compare two docs ----------------
 
 def compare_docs(question: str, ctx_a: List[str], ctx_b: List[str], label_a="Doc A", label_b="Doc B") -> str:
     brt = get_bedrock_runtime(GEN_REGION)
@@ -207,9 +235,9 @@ Compare {label_a} vs {label_b} using ONLY the sources.
 Cite evidence with IDs like A1, A2, B1, B3.
 
 Output format:
-- Summary
+- Summary (2-4 lines)
 - Key differences (bullets)
-- Recommendation (if applicable)
+- Recommendation (1-2 lines)
 - Citations used (list of A#/B#)
 
 If not enough info, say so.
