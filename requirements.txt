@@ -5,3 +5,5 @@ pypdf
 faiss-cpu
 numpy
 reportlab
+pillow
+
