@@ -1,7 +1,7 @@
-import os
 import json
 import streamlit as st
 from pypdf import PdfReader
+
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
@@ -15,11 +15,27 @@ from bedrock_utils import (
     DOC_TYPES,
 )
 
+# ---------- Page / Style ----------
 st.set_page_config(page_title="Smart Document Copilot", layout="wide")
+
+st.markdown("""
+<style>
+.block-container { padding-top: 1.2rem; }
+[data-testid="stSidebar"] { padding-top: 1rem; }
+div[data-testid="stMetric"] {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  padding: 12px;
+  border-radius: 14px;
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.title("📄 Smart Document Copilot")
-st.caption("Amazon Nova (Bedrock): Multimodal RAG + Evidence + Compare + PDF Report  #AmazonNova")
+st.caption("Amazon Nova on Bedrock • Multimodal RAG • Evidence • Compare • PDF Report   #AmazonNova")
 
 
+# ---------- Helpers ----------
 def extract_text_from_pdf(file) -> str:
     reader = PdfReader(file)
     texts = []
@@ -50,7 +66,6 @@ def make_pdf_report(filename: str, title: str, sections: list[tuple[str, str]]) 
     for heading, body in sections:
         story.append(Paragraph(heading, styles["Heading2"]))
         story.append(Spacer(1, 0.1 * inch))
-        # Escape minimal HTML issues
         safe = (body or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         story.append(Paragraph(safe.replace("\n", "<br/>"), styles["BodyText"]))
         story.append(Spacer(1, 0.2 * inch))
@@ -63,67 +78,75 @@ def make_pdf_report(filename: str, title: str, sections: list[tuple[str, str]]) 
         return f.read()
 
 
-# ---------- Sidebar settings ----------
-st.sidebar.header("Settings")
+def reset_session():
+    for k in list(st.session_state.keys()):
+        del st.session_state[k]
+
+
+# ---------- Sidebar ----------
+st.sidebar.header("Controls")
+st.sidebar.button("🔄 Reset / New session", on_click=reset_session, use_container_width=True)
+
+mode = st.sidebar.radio("Mode", ["Single Document", "Compare Two Documents"])
+
 chunk_size = st.sidebar.slider("Chunk size (chars)", 400, 2000, 1000, 100)
 overlap = st.sidebar.slider("Overlap (chars)", 0, 400, 150, 25)
 top_k = st.sidebar.slider("Top-K sources", 2, 8, 4, 1)
 
-mode = st.sidebar.radio("Mode", ["Single Document", "Compare Two Documents"])
+st.sidebar.markdown("---")
+st.sidebar.caption("Tip: Upload the research paper sample and ask:\n- What were the key results?\n- What is the hallucination rate?\n- Summarize methodology with 1 insight")
 
-st.divider()
 
-# ---------- Session state ----------
-if "single_rag" not in st.session_state:
-    st.session_state.single_rag = None
-if "doc_text" not in st.session_state:
-    st.session_state.doc_text = ""
-if "doc_chunks" not in st.session_state:
-    st.session_state.doc_chunks = []
+# ---------- Session init ----------
+if "chat" not in st.session_state:
+    st.session_state.chat = []  # list of {role, content}
 if "qa_log" not in st.session_state:
-    st.session_state.qa_log = []  # list of dicts
+    st.session_state.qa_log = []  # for report export
 
 
 # =======================
-# MODE 1: Single Document
+# Mode: Single Document
 # =======================
 if mode == "Single Document":
     uploaded = st.file_uploader("Upload a PDF", type=["pdf"])
+
     if uploaded is None:
-        st.info("Upload a PDF to begin.")
+        st.info("Upload a PDF to begin. Then click **Build Index** and start chatting.")
         st.stop()
 
     full_text = extract_text_from_pdf(uploaded)
     chunks = chunk_text(full_text, chunk_size=chunk_size, overlap=overlap)
 
-    st.session_state.doc_text = full_text
-    st.session_state.doc_chunks = chunks
+    # Metrics row (looks premium)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Chunks", len(chunks))
+    m2.metric("Top-K retrieval", top_k)
+    m3.metric("Mode", "Single")
 
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("Extracted text (preview)")
-        st.text_area("Preview", full_text[:6000], height=300)
-    with c2:
-        st.subheader("Chunks")
-        st.write(f"Total chunks: **{len(chunks)}**")
-        idx = st.number_input("Preview chunk #", 1, len(chunks), 1)
-        st.text_area("Chunk preview", chunks[idx - 1], height=300)
+    # Preview
+    with st.expander("📄 Document preview", expanded=False):
+        st.text_area("Extracted text (preview)", full_text[:8000], height=260)
 
-    st.subheader("1) Build Index (Nova embeddings → FAISS)")
-    if st.button("🚀 Build Index", type="primary"):
-        with st.spinner("Building index..."):
-            rag = RagIndex(dim=1024)
-            rag.add_chunks(chunks)
-            st.session_state.single_rag = rag
-        st.success("Index built!")
+    # Build index
+    st.subheader("1) Index the document")
+    if "single_rag" not in st.session_state:
+        st.session_state.single_rag = None
 
-    if st.session_state.single_rag is None:
-        st.warning("Build the index first.")
-        st.stop()
+    colA, colB = st.columns([1, 1])
+    with colA:
+        if st.button("🚀 Build Index (Nova embeddings → FAISS)", type="primary", use_container_width=True):
+            with st.spinner("Building index (this may take some time the first run)..."):
+                rag = RagIndex(dim=1024)
+                rag.add_chunks(chunks)
+                st.session_state.single_rag = rag
+            st.success("Index ready ✅")
+
+    with colB:
+        st.info("Once indexed, chat below. Answers are grounded and include evidence snippets + sources.")
 
     st.divider()
 
-    # -------- Doc type + JSON extraction --------
+    # Extraction
     st.subheader("2) Extract key fields (JSON)")
     doc_type = st.selectbox("Document type", DOC_TYPES, index=0, help="Choose Auto to detect doc type.")
     if st.button("🧾 Extract key fields as JSON"):
@@ -133,61 +156,84 @@ if mode == "Single Document":
 
     st.divider()
 
-    # -------- Q&A with evidence --------
-    st.subheader("3) Ask questions (with evidence)")
-    question = st.text_input("Your question", placeholder="e.g., What are the key results? What is the due date? What are main risks?")
+    # Chat UI
+    st.subheader("3) Chat with your document (short + insightful answers)")
 
-    if st.button("💬 Ask"):
-        if not question.strip():
-            st.error("Please type a question.")
-            st.stop()
+    if st.session_state.single_rag is None:
+        st.warning("Build the index first to enable chat.")
+        st.stop()
+    else:
+        st.success("Chat ready ✅")
 
+    # Render history
+    for msg in st.session_state.chat:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    user_q = st.chat_input("Ask something about the document… (e.g., What are the key results?)")
+
+    if user_q:
+        # show user message
+        st.session_state.chat.append({"role": "user", "content": user_q})
+        with st.chat_message("user"):
+            st.markdown(user_q)
+
+        # retrieve
         with st.spinner("Retrieving sources..."):
-            hits, scores = st.session_state.single_rag.search(question, k=top_k)
+            hits, scores = st.session_state.single_rag.search(user_q, k=top_k)
             ctx = [h.text for h in hits]
 
-        with st.spinner("Answering with Nova Lite + evidence..."):
-            ans = ask_with_evidence(question, ctx)
+        # answer
+        with st.spinner("Thinking with Nova Lite..."):
+            ans = ask_with_evidence(user_q, ctx)
 
+        answer_text = ans.get("answer", "")
+        evidence = ans.get("evidence", [])
+
+        # assistant message
+        with st.chat_message("assistant"):
+            st.markdown(f"**Answer:** {answer_text}")
+
+            st.markdown("**Evidence**")
+            if evidence:
+                for e in evidence:
+                    st.markdown(f"- *(Source {e.get('source')})* “{e.get('quote')}”")
+            else:
+                st.caption("No evidence snippets returned (might be not found in the document).")
+
+            st.markdown("**Retrieved sources**")
+            for i, (h, s) in enumerate(zip(hits, scores), start=1):
+                with st.expander(f"Source {i} • score {s:.3f} • chunk #{h.chunk_id}"):
+                    st.write(h.text[:2000])
+
+        # store in logs (for report)
+        st.session_state.chat.append({"role": "assistant", "content": f"**Answer:** {answer_text}"})
         st.session_state.qa_log.append({
-            "question": question,
-            "answer": ans.get("answer", ""),
-            "sources_used": ans.get("sources_used", []),
-            "evidence": ans.get("evidence", []),
+            "question": user_q,
+            "answer": answer_text,
+            "evidence": evidence,
         })
-
-        st.markdown("### ✅ Answer")
-        st.write(ans.get("answer", ""))
-
-        # Evidence cards
-        st.markdown("### 🧾 Evidence snippets")
-        ev = ans.get("evidence", [])
-        if not ev:
-            st.info("No evidence snippets returned (answer may be 'I don't know').")
-        else:
-            for item in ev:
-                st.write(f"**Source {item.get('source')}**: “{item.get('quote')}”")
-
-        # Sources expanders
-        st.markdown("### 🔎 Retrieved sources")
-        for i, (h, s) in enumerate(zip(hits, scores), start=1):
-            with st.expander(f"Source {i} (chunk #{h.chunk_id}) — score {s:.3f}"):
-                st.write(h.text[:2000])
 
     st.divider()
 
-    # -------- Export PDF report --------
+    # Export report
     st.subheader("4) Export report (PDF)")
     if st.button("📄 Generate PDF report"):
-        # Include last extraction if you want; here we include Q&A log + summary
         auto_type = detect_doc_type(full_text)
+
         qa_text = ""
         for i, item in enumerate(st.session_state.qa_log[-10:], start=1):
-            qa_text += f"{i}. Q: {item['question']}\nA: {item['answer']}\nSources used: {item.get('sources_used', [])}\n\n"
+            qa_text += f"{i}. Q: {item['question']}\nA: {item['answer']}\n"
+            ev = item.get("evidence", [])
+            if ev:
+                qa_text += "Evidence:\n"
+                for e in ev:
+                    qa_text += f"  - Source {e.get('source')}: {e.get('quote')}\n"
+            qa_text += "\n"
 
         sections = [
             ("Document type (auto)", auto_type),
-            ("Document summary (first 1200 chars)", full_text[:1200]),
+            ("Document preview (first 1200 chars)", full_text[:1200]),
             ("Recent Q&A (up to last 10)", qa_text or "No Q&A yet."),
         ]
         pdf_bytes = make_pdf_report(
@@ -203,20 +249,20 @@ if mode == "Single Document":
         )
 
 
-# ===========================
-# MODE 2: Compare Two Documents
-# ===========================
+# =======================
+# Mode: Compare Two Docs
+# =======================
 else:
-    st.subheader("Compare Two Documents")
-    colA, colB = st.columns(2)
+    st.subheader("🆚 Compare Two PDFs")
 
-    with colA:
+    c1, c2 = st.columns(2)
+    with c1:
         up_a = st.file_uploader("Upload PDF (Doc A)", type=["pdf"], key="docA")
-    with colB:
+    with c2:
         up_b = st.file_uploader("Upload PDF (Doc B)", type=["pdf"], key="docB")
 
     if up_a is None or up_b is None:
-        st.info("Upload both PDFs to compare.")
+        st.info("Upload both PDFs, build indexes, then ask a comparison question.")
         st.stop()
 
     text_a = extract_text_from_pdf(up_a)
@@ -225,28 +271,42 @@ else:
     chunks_a = chunk_text(text_a, chunk_size=chunk_size, overlap=overlap)
     chunks_b = chunk_text(text_b, chunk_size=chunk_size, overlap=overlap)
 
-    st.write(f"Doc A chunks: **{len(chunks_a)}** | Doc B chunks: **{len(chunks_b)}**")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Doc A chunks", len(chunks_a))
+    m2.metric("Doc B chunks", len(chunks_b))
+    m3.metric("Mode", "Compare")
 
-    if st.button("🚀 Build indexes for A & B", type="primary"):
+    with st.expander("Doc A preview", expanded=False):
+        st.text_area("Doc A (preview)", text_a[:5000], height=220)
+    with st.expander("Doc B preview", expanded=False):
+        st.text_area("Doc B (preview)", text_b[:5000], height=220)
+
+    if "rag_a" not in st.session_state:
+        st.session_state.rag_a = None
+    if "rag_b" not in st.session_state:
+        st.session_state.rag_b = None
+
+    st.subheader("1) Build indexes for both documents")
+    if st.button("🚀 Build indexes A & B", type="primary"):
         with st.spinner("Building index A..."):
             rag_a = RagIndex(dim=1024)
             rag_a.add_chunks(chunks_a)
         with st.spinner("Building index B..."):
             rag_b = RagIndex(dim=1024)
             rag_b.add_chunks(chunks_b)
+
         st.session_state.rag_a = rag_a
         st.session_state.rag_b = rag_b
-        st.session_state.text_a = text_a
-        st.session_state.text_b = text_b
-        st.success("Both indexes built!")
+        st.success("Both indexes ready ✅")
 
-    if "rag_a" not in st.session_state or "rag_b" not in st.session_state:
+    if st.session_state.rag_a is None or st.session_state.rag_b is None:
         st.warning("Build indexes first.")
         st.stop()
 
     st.divider()
-    st.subheader("Ask a comparison question")
-    q = st.text_input("Comparison question", placeholder="e.g., Which candidate is better for backend role and why?")
+    st.subheader("2) Ask a comparison question")
+
+    q = st.text_input("Comparison question", placeholder="e.g., Which paper reports better results and why?")
     if st.button("🆚 Compare"):
         if not q.strip():
             st.error("Type a comparison question.")
@@ -266,14 +326,24 @@ else:
         st.markdown("### ✅ Comparison result")
         st.write(out)
 
+        # Store last comparison to export
+        st.session_state.last_compare = out
+        st.session_state.last_compare_q = q
+
     st.divider()
-    st.subheader("Export comparison report (PDF)")
+    st.subheader("3) Export comparison report (PDF)")
+
     if st.button("📄 Generate comparison PDF"):
+        compare_out = st.session_state.get("last_compare", "Run a comparison first to include output here.")
+        compare_q = st.session_state.get("last_compare_q", "(no question yet)")
+
         sections = [
-            ("Doc A (preview)", st.session_state.text_a[:1200]),
-            ("Doc B (preview)", st.session_state.text_b[:1200]),
-            ("Comparison note", "Use the Compare button first to generate a comparison output."),
+            ("Comparison question", compare_q),
+            ("Comparison output", compare_out),
+            ("Doc A preview (first 1200 chars)", text_a[:1200]),
+            ("Doc B preview (first 1200 chars)", text_b[:1200]),
         ]
+
         pdf_bytes = make_pdf_report(
             filename="smart_doc_copilot_compare_report.pdf",
             title="Smart Document Copilot – Comparison Report",
