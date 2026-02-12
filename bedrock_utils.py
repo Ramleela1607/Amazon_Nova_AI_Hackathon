@@ -168,40 +168,36 @@ Document:
 
 # ---------------- Q&A with short+insight + evidence ----------------
 
-def ask_with_evidence(question: str, context_chunks: List[str]) -> Dict[str, Any]:
-    """
-    Returns dict:
-      {
-        "answer": "1-2 sentences",
-        "sources_used": [1,2],
-        "evidence": [{"source": 1, "quote": "..."}, ...]
-      }
-    """
+def ask_with_evidence(question: str, context_chunks: List[str]) -> dict:
     brt = get_bedrock_runtime(GEN_REGION)
-    sources_block = "\n\n".join([f"[Source {i+1}]\n{c}" for i, c in enumerate(context_chunks)])
+
+    sources_block = "\n\n".join(
+        [f"[Source {i+1}]\n{c}" for i, c in enumerate(context_chunks)]
+    )
 
     prompt = f"""
 You are Smart Document Copilot.
-Answer using ONLY the sources.
 
-Return VALID JSON only in this schema:
-{{
-  "answer": "string",
-  "sources_used": [1,2],
-  "evidence": [
-    {{"source": 1, "quote": "short exact snippet from Source 1"}}
-  ]
-}}
+Answer the question using ONLY the provided sources.
 
-Answer rules:
-- 1–2 sentences only.
-- Must include 1 useful insight (implication OR key number/metric OR takeaway).
-- No fluff, no repetition.
-- If not found: answer="I don't know based on the document.", sources_used=[], evidence=[].
+Answer style:
+- 3–4 concise sentences.
+- Include key numbers or metrics if available.
+- Add one useful insight (implication or takeaway).
+- Do NOT mention response time or latency.
+- Be professional and clear.
+- If information is not found, say:
+  "I don't know based on the document."
+
+After the answer, add a section exactly like this:
+
+Evidence:
+- short exact quote
+- short exact quote
 
 Evidence rules:
-- Provide 1–3 short quotes copied EXACTLY from sources.
-- Keep each quote short.
+- Provide 1–3 short exact quotes from the sources.
+- Keep quotes short and relevant.
 
 SOURCES:
 {sources_block}
@@ -209,16 +205,25 @@ SOURCES:
 QUESTION:
 {question}
 """
+
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
     )
-    txt = resp["output"]["message"]["content"][0]["text"]
 
-    try:
-        return json.loads(txt)
-    except Exception:
-        return {"answer": txt, "sources_used": [], "evidence": []}
+    text = resp["output"]["message"]["content"][0]["text"]
+
+    # Split answer and evidence cleanly
+    if "Evidence:" in text:
+        answer_part, evidence_part = text.split("Evidence:", 1)
+    else:
+        answer_part = text
+        evidence_part = ""
+
+    return {
+        "answer": answer_part.strip(),
+        "evidence": evidence_part.strip()
+    }
 
 
 # ---------------- Compare two docs ----------------
@@ -256,3 +261,4 @@ QUESTION:
         messages=[{"role": "user", "content": [{"text": prompt}]}],
     )
     return resp["output"]["message"]["content"][0]["text"]
+
