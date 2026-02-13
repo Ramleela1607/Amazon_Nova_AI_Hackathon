@@ -18,8 +18,8 @@ from bedrock_utils import (
     compare_docs,
     DOC_TYPES,
     recommend_rag_settings,
-    nova_image_to_text,
-    nova_image_insights_brief,   # brief only (2 lines)
+    nova_image_to_text,           # internal only
+    nova_image_insights_brief,    # brief only (2 lines)
     generate_report_title,
     suggest_questions,
 )
@@ -123,7 +123,7 @@ div[data-baseweb="input"] input, textarea {
   border: 1px solid rgba(15,23,42,0.16) !important;
 }
 
-/* Buttons: premium + visible */
+/* Buttons */
 .stButton button {
   border-radius: 14px;
   border: 1px solid rgba(15,23,42,0.14);
@@ -138,10 +138,7 @@ div[data-baseweb="input"] input, textarea {
   box-shadow: 0 10px 26px rgba(99,102,241,0.18);
 }
 
-/* Links */
 a { color: #1d4ed8 !important; }
-
-/* Reduce top padding */
 .block-container { padding-top: 1.1rem; }
 </style>
 """, unsafe_allow_html=True)
@@ -203,8 +200,7 @@ def reset_session():
         "rag_a", "rag_b",
         "pending_question",
     ]:
-        if k in st.session_state:
-            del st.session_state[k]
+        st.session_state.pop(k, None)
     st.rerun()
 
 def build_index_if_needed(full_text: str, chunk_size: int, overlap: int):
@@ -225,9 +221,31 @@ def build_index_if_needed(full_text: str, chunk_size: int, overlap: int):
     st.session_state["single_rag"] = rag
     st.session_state["index_fp"] = new_fp
 
+def run_single_question(user_q: str, top_k: int):
+    """Run a single question and store ONLY latest result (no chat accumulation)."""
+    rag = st.session_state.get("single_rag", None)
+    if not isinstance(rag, RagIndex):
+        st.error("Index not ready. Rebuild from sidebar or Reset.")
+        st.stop()
+
+    with st.spinner("Retrieving sources..."):
+        hits, scores = rag.search(user_q, k=top_k)
+        ctx = [h.text for h in hits]
+
+    with st.spinner("Thinking with Nova Lite..."):
+        t0 = time.time()
+        ans = ask_with_evidence(user_q, ctx)
+        rt = round(time.time() - t0, 2)
+
+    st.session_state["latest_q"] = user_q
+    st.session_state["latest_answer"] = (ans.get("answer") or "").strip()
+    st.session_state["latest_evidence"] = (ans.get("evidence") or "").strip()
+    st.session_state["latest_sources"] = list(zip(hits, scores))
+    st.session_state["latest_rt"] = rt
+
+
 # ---------- Session init ----------
-if "uploader_key" not in st.session_state:
-    st.session_state.uploader_key = 0
+st.session_state.setdefault("uploader_key", 0)
 
 # ---------- Sidebar ----------
 st.sidebar.header("⚙️ Controls")
@@ -264,45 +282,36 @@ if mode == "Single Document":
         pdf_text = extract_text_from_pdf(uploaded_pdf)
         full_text_parts.append("=== PDF TEXT ===\n" + pdf_text)
 
-    # Image -> internal OCR + cached brief insights
+    # Image: cache insights + internal OCR
     if uploaded_img is not None:
-    
-        # 1️⃣ Normalize to PNG bytes (REQUIRED)
         img_rgb = Image.open(uploaded_img).convert("RGB")
         buf = io.BytesIO()
         img_rgb.save(buf, format="PNG")
         img_bytes = buf.getvalue()
-    
-        # 2️⃣ Compute doc fingerprint BEFORE caching insights
-        temp_fp_src = img_bytes[:20000]
-        doc_fp = hashlib.md5(temp_fp_src).hexdigest()
-    
-        img_cache_key = f"insights:{doc_fp}"
-    
-        # 3️⃣ Generate insights only once (prevents refresh flicker)
+
+        img_fp = hashlib.md5(img_bytes[:20000]).hexdigest()
+        img_cache_key = f"img_insights:{img_fp}"
+
         if img_cache_key not in st.session_state:
             with st.spinner("💡 Generating image insights..."):
-                st.session_state[img_cache_key] = nova_image_insights_brief(
-                    img_bytes,
-                    image_format="png"
-                )
-    
-        insights = st.session_state[img_cache_key]
-    
-        # 4️⃣ Display ONLY the 2-line insights
+                st.session_state[img_cache_key] = nova_image_insights_brief(img_bytes, image_format="png")
+
+        insights = st.session_state.get(img_cache_key, "")
+
         if insights.strip():
             st.subheader("Insights")
             st.markdown(insights.replace("\n", "  \n"))
-    
-        # 5️⃣ Still extract OCR internally for RAG (not shown to user)
-        ocr_text = nova_image_to_text(img_bytes, image_format="png")
-    
+
+        # OCR for retrieval only (do not show)
+        try:
+            ocr_text = nova_image_to_text(img_bytes, image_format="png")
+        except Exception:
+            ocr_text = ""
+
         if ocr_text.strip():
             full_text_parts.append("=== IMAGE TEXT ===\n" + ocr_text)
-    
         if insights.strip():
             full_text_parts.append("=== IMAGE INSIGHTS ===\n" + insights)
-
 
     # Notes
     if user_text.strip():
@@ -316,16 +325,15 @@ if mode == "Single Document":
         st.session_state["last_doc_fp"] = doc_fp
         with st.spinner("⚙️ Nova is auto-optimizing retrieval settings..."):
             st.session_state["auto_rag_settings"] = recommend_rag_settings(full_text)
-        # reset suggestions
+
         st.session_state.pop("suggest_fp", None)
         st.session_state.pop("suggested_questions", None)
-        # force index rebuild
         st.session_state.pop("index_fp", None)
 
     rec = st.session_state.get("auto_rag_settings", {"chunk_size": 1000, "overlap": 150, "top_k": 4})
     auto_chunk_size, auto_overlap, auto_top_k = rec["chunk_size"], rec["overlap"], rec["top_k"]
 
-    # Retrieval settings ONLY in sidebar (auto + adjustable)
+    # Sidebar retrieval settings (auto + adjustable)
     st.sidebar.subheader("🔎 Retrieval settings")
     use_auto = st.sidebar.toggle("Use Nova auto-optimized settings", value=True)
 
@@ -340,7 +348,6 @@ if mode == "Single Document":
     if st.sidebar.button("♻️ Rebuild index now", use_container_width=True):
         st.session_state.pop("index_fp", None)
 
-    # Auto build index
     build_index_if_needed(full_text, chunk_size=chunk_size, overlap=overlap)
 
     st.divider()
@@ -355,23 +362,23 @@ if mode == "Single Document":
 
     st.divider()
 
-    # Suggested questions
+    # Suggested questions (auto)
     st.markdown("### ✨ Nova-suggested questions (auto from your document)")
     suggest_fp = f"{doc_fp}:{user_interest}"
 
     if st.session_state.get("suggest_fp") != suggest_fp:
         st.session_state["suggest_fp"] = suggest_fp
         with st.spinner("Generating questions from your document..."):
-            st.session_state["suggested_questions"] = suggest_questions(
-                full_text, user_interest=user_interest, n=6
-            )
+            st.session_state["suggested_questions"] = suggest_questions(full_text, user_interest=user_interest, n=6)
 
     qs = st.session_state.get("suggested_questions", [])
+
     if qs:
         cols = st.columns(3)
         for i, q in enumerate(qs):
             with cols[i % 3]:
-                if st.button(q, use_container_width=True, key=f"dynq_{i}"):
+                if st.button(q, use_container_width=True, key=f"dynq_{doc_fp}_{i}"):
+                    # auto-run immediately
                     st.session_state["pending_question"] = q
                     st.rerun()
     else:
@@ -379,83 +386,44 @@ if mode == "Single Document":
 
     if st.button("🔄 Refresh questions", use_container_width=True):
         with st.spinner("Refreshing questions..."):
-            st.session_state["suggested_questions"] = suggest_questions(
-                full_text, user_interest=user_interest, n=6
-            )
+            st.session_state["suggested_questions"] = suggest_questions(full_text, user_interest=user_interest, n=6)
         st.rerun()
 
     st.divider()
 
-    # Chat (INLINE input)
+    # Chat section (manual + auto-run from suggestions)
     st.subheader("3) Chat with your document")
     st.markdown("#### 💬 Ask a question")
-    
-    # Inline input + Ask button (NOT chat_input)
-    c1, c2 = st.columns([5, 1])
-    
-    with c1:
-        # IMPORTANT: do NOT pass value= when using key
-        user_q_typed = st.text_input(
-            "Ask",
-            placeholder="e.g., What is the invoice total and due date?",
+
+    # If suggestion clicked, it runs automatically
+    pending = st.session_state.pop("pending_question", "")
+    if pending:
+        run_single_question(pending, top_k=top_k)
+
+    # Manual input (stays inline here, NOT bottom)
+    with st.form("ask_form", clear_on_submit=True):
+        q_text = st.text_input(
+            "Type your question",
+            placeholder="e.g., What is the total amount and due date?",
             label_visibility="collapsed",
-            key="inline_chat_input",
         )
-    
-    with c2:
-        ask_clicked = st.button("Ask", type="primary", use_container_width=True)
-    
-    # Decide question to run:
-    # 1) if suggestion click set pending_question -> run that immediately
-    # 2) else if user clicked Ask -> run typed input
-    user_q = None
-    if "pending_question" in st.session_state:
-        user_q = st.session_state.pop("pending_question")
-    elif ask_clicked and user_q_typed.strip():
-        user_q = user_q_typed.strip()
-    
-    if user_q:
-        rag = st.session_state.get("single_rag", None)
-        if not isinstance(rag, RagIndex):
-            st.error("Index not ready. Try 'Rebuild index now' in the sidebar.")
-            st.stop()
-    
-        # Clear previous output (you asked: do not accumulate)
-        st.session_state["latest_q"] = user_q
-        st.session_state["latest_answer"] = ""
-        st.session_state["latest_evidence"] = ""
-        st.session_state["latest_sources"] = []
-        st.session_state["latest_rt"] = 0.0
-    
-        with st.spinner("Retrieving sources..."):
-            hits, scores = rag.search(user_q, k=top_k)
-            ctx = [h.text for h in hits]
-    
-        with st.spinner("Thinking with Nova Lite..."):
-            start_time = time.time()
-            ans = ask_with_evidence(user_q, ctx)
-            response_time = round(time.time() - start_time, 2)
-    
-        st.session_state["latest_answer"] = (ans.get("answer", "") or "").strip() or "I don't know based on the document."
-        st.session_state["latest_evidence"] = (ans.get("evidence", "") or "").strip()
-        st.session_state["latest_sources"] = list(zip(hits, scores))
-        st.session_state["latest_rt"] = response_time
-    
-        # OPTIONAL: clear the input after run
-        st.rerun()
-    
-    # Render ONLY latest output (no accumulation)
+        ask_clicked = st.form_submit_button("Ask", use_container_width=True)
+
+    if ask_clicked and q_text.strip():
+        run_single_question(q_text.strip(), top_k=top_k)
+
+    # Show ONLY latest output
     if st.session_state.get("latest_answer"):
         st.markdown("### ✅ Latest Answer")
         st.markdown(f"**Question:** {st.session_state.get('latest_q','')}")
-        st.markdown(st.session_state["latest_answer"])
-    
-        if st.session_state.get("latest_evidence"):
-            with st.expander("📌 Evidence"):
-                st.markdown(st.session_state["latest_evidence"])
-    
-        st.caption(f"⏱ Average response time: {st.session_state.get('latest_rt', 0)} sec")
+        st.markdown(st.session_state["latest_answer"] or "I don't know based on the document.")
 
+        ev = st.session_state.get("latest_evidence", "")
+        if ev:
+            with st.expander("📌 Evidence"):
+                st.markdown(ev)
+
+        st.caption(f"⏱ Response time: {st.session_state.get('latest_rt', 0)} sec")
 
     st.divider()
 
@@ -551,7 +519,3 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
-
-
-
-
