@@ -345,11 +345,6 @@ if mode == "Single Document":
     # Ask UI
     st.markdown("#### 💬 Ask a question")
     user_q = None
-    if "pending_question" in st.session_state:
-        user_q = st.session_state.pop("pending_question")
-    else:
-        user_q = st.chat_input("Ask something about the document…")
-
     if user_q:
         user_q = user_q.strip()
         if user_q:
@@ -486,4 +481,5 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
