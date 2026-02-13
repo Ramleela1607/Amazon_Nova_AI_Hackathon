@@ -2,11 +2,9 @@ import time
 import streamlit as st
 from pypdf import PdfReader
 from PIL import Image
-
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
-
 from rag_index import RagIndex
 from bedrock_utils import (
     ask_with_evidence,
@@ -14,6 +12,8 @@ from bedrock_utils import (
     detect_doc_type,
     compare_docs,
     DOC_TYPES,
+    nova_image_to_text,
+    nova_image_insights,
 )
 
 # ---------- Page ----------
@@ -30,16 +30,13 @@ st.markdown("""
   color: #111827 !important;
 }
 html, body, [class*="css"]  { color: #111827 !important; }
-
 section[data-testid="stSidebar"]{
   background: rgba(255,255,255,0.72) !important;
   backdrop-filter: blur(10px);
   border-right: 1px solid rgba(17,24,39,0.08);
 }
 section[data-testid="stSidebar"] *{ color: #111827 !important; }
-
 .block-container { padding-top: 1.2rem; }
-
 div[data-testid="stMetric"] {
   background: rgba(255,255,255,0.82);
   border: 1px solid rgba(17,24,39,0.10);
@@ -142,7 +139,7 @@ overlap = st.sidebar.slider("Overlap (chars)", 0, 400, 150, 25)
 top_k = st.sidebar.slider("Top-K sources", 2, 8, 4, 1)
 
 st.sidebar.markdown("---")
-st.sidebar.caption("✅ Demo tips:\n- Upload PDF or Image + paste image text\n- Ask: 'What does the image say?'\n- Show Evidence + Sources\n- Download PDF report")
+st.sidebar.caption("✅ Demo tips:\n- Upload PDF or Image\n- Ask: 'What does the image say?'\n- Show Evidence + Sources\n- Download PDF report")
 
 # ---------- Session init ----------
 if "chat" not in st.session_state:
@@ -155,58 +152,61 @@ if "qa_log" not in st.session_state:
 # =======================
 if mode == "Single Document":
     uploaded_pdf = st.file_uploader("📤 Upload a PDF (optional)", type=["pdf"])
-    uploaded_img = st.file_uploader("🖼️ Upload an Image (optional)", type=["png", "jpg", "jpeg"])
-    user_text = st.text_area("✍️ Paste extra text / notes (optional)", height=120, placeholder="Paste any text you want the bot to use...")
-
-    image_manual_text = ""
-    full_text_parts = []
+    uploaded_img = st.file_uploader("🖼️ Upload an Image (optional)", type=["png", "jpg", "jpeg", "webp"])
+    user_text = st.text_area("✍️ Paste extra text / notes (optional)", height=100)
 
     if uploaded_pdf is None and uploaded_img is None and not user_text.strip():
-        st.info("Upload a PDF or Image or paste text → Build Index → Start chatting.")
+        st.info("Upload a PDF or Image (or paste text) → Build Index → Start chatting.")
         st.stop()
 
-    # PDF → text
+    full_text_parts = []
+
+    # PDF
     if uploaded_pdf is not None:
         pdf_text = extract_text_from_pdf(uploaded_pdf)
         full_text_parts.append("=== PDF TEXT ===\n" + pdf_text)
 
-    # Image → show + manual text input
+    # Image (AUTO extract via Nova Lite)
     if uploaded_img is not None:
         img = Image.open(uploaded_img)
         st.image(img, caption="Uploaded image", use_container_width=True)
 
-        st.info("Paste the text from the image below so it becomes searchable (OCR service blocked).")
-        image_manual_text = st.text_area(
-            "🧾 Image text (paste here)",
-            height=120,
-            placeholder="Type/paste what’s written in the image so it becomes searchable...",
-        )
+        img_bytes = uploaded_img.getvalue()
+        img_fmt = uploaded_img.name.split(".")[-1].lower() if "." in uploaded_img.name else "png"
 
-        if image_manual_text.strip():
-            full_text_parts.append("=== IMAGE TEXT (MANUAL) ===\n" + image_manual_text.strip())
+        with st.spinner("🔍 Reading image with Nova Lite (multimodal)..."):
+            try:
+                ocr_text = nova_image_to_text(img_bytes, image_format=img_fmt)
+            except Exception as e:
+                ocr_text = ""
+                st.error(f"Image extraction failed: {e}")
+
+        with st.spinner("💡 Generating image insights with Nova Lite..."):
+            try:
+                insights = nova_image_insights(img_bytes, image_format=img_fmt)
+            except Exception as e:
+                insights = ""
+                st.error(f"Image insights failed: {e}")
+
+        if ocr_text.strip():
+            st.success("✅ Text extracted from image")
+            with st.expander("🧾 Extracted image text", expanded=False):
+                st.text_area("OCR text", ocr_text, height=160)
+            full_text_parts.append("=== IMAGE TEXT (NOVA) ===\n" + ocr_text)
         else:
-            full_text_parts.append(
-                "=== IMAGE UPLOADED ===\n"
-                f"Filename: {uploaded_img.name}\n"
-                "NOTE: No text provided. The assistant cannot answer questions about the image content unless you paste the text."
-            )
+            st.warning("No readable text detected in the image (or model returned none).")
 
-    # User notes
+        if insights.strip():
+            with st.expander("✨ Image insights", expanded=True):
+                st.markdown(insights)
+            full_text_parts.append("=== IMAGE INSIGHTS (NOVA) ===\n" + insights)
+
+    # Notes
     if user_text.strip():
         full_text_parts.append("=== USER NOTES ===\n" + user_text.strip())
 
     full_text = "\n\n".join(full_text_parts)
     chunks = chunk_text(full_text, chunk_size=chunk_size, overlap=overlap)
-
-    # Helpful warning if image-only with no text
-    only_image_no_text = (
-        uploaded_img is not None
-        and uploaded_pdf is None
-        and not user_text.strip()
-        and not image_manual_text.strip()
-    )
-    if only_image_no_text:
-        st.warning("You uploaded an image but did not paste its text. Paste text in '🧾 Image text' for Q&A to work well.")
 
     # Metrics
     c1, c2, c3, c4 = st.columns(4)
@@ -230,6 +230,7 @@ if mode == "Single Document":
                 rag.add_chunks(chunks)
                 st.session_state.single_rag = rag
             st.success("Index ready ✅")
+
     with b:
         st.info("Chat below. Evidence + sources included. Response time appears at bottom.")
 
@@ -254,17 +255,17 @@ if mode == "Single Document":
         st.stop()
 
     if len(full_text.strip()) < 50:
-        st.warning("Not enough text to chat. Upload a PDF or paste text (including image text).")
+        st.warning("Not enough text to chat. Upload a PDF or a text-heavy image.")
         st.stop()
 
-    # Top actions
-    topA, topB = st.columns([1, 3])
-    if topA.button("🧹 Clear chat", use_container_width=True):
+    # Clear chat
+    cc1, cc2 = st.columns([1, 3])
+    if cc1.button("🧹 Clear chat", use_container_width=True):
         st.session_state.chat = []
         st.session_state.qa_log = []
         st.rerun()
-    with topB:
-        st.caption("Tip: Ask directly about pasted image text or PDF content.")
+    with cc2:
+        st.caption("Tip: Ask about extracted image text, image insights, or PDF content.")
 
     # Suggested questions
     st.markdown("### ✨ Suggested questions")
@@ -280,17 +281,16 @@ if mode == "Single Document":
     if sq2.button("📊 Key metrics", use_container_width=True): clicked = suggestions[1]
     if sq3.button("⚠️ Risks", use_container_width=True): clicked = suggestions[2]
     if sq4.button("✅ Next steps", use_container_width=True): clicked = suggestions[3]
-
     if clicked:
         st.session_state["_prefill_q"] = clicked
 
-    # Render chat history
+    # Render history
     for msg in st.session_state.chat:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
     default_q = st.session_state.pop("_prefill_q", "")
-    user_q = st.chat_input("Ask something… (try: What does the image say?)")
+    user_q = st.chat_input("Ask something… (e.g., What does the image say?)")
     if default_q:
         user_q = default_q
 
@@ -299,13 +299,11 @@ if mode == "Single Document":
         with st.chat_message("user"):
             st.markdown(user_q)
 
-        # Retrieve
         with st.spinner("Retrieving sources..."):
             hits, scores = st.session_state.single_rag.search(user_q, k=top_k)
             ctx = [h.text for h in hits]
             avg_score = (sum(scores) / len(scores)) if scores else 0.0
 
-        # Answer
         with st.spinner("Thinking with Nova Lite..."):
             start_time = time.time()
             ans = ask_with_evidence(user_q, ctx)
@@ -315,13 +313,13 @@ if mode == "Single Document":
         evidence_text = ans.get("evidence", "")
 
         with st.chat_message("assistant"):
-            badge1, badge2 = st.columns([1, 3])
-            with badge1:
+            b1, b2 = st.columns([1, 3])
+            with b1:
                 if avg_score >= 0.25:
                     st.success("✅ Grounded")
                 else:
                     st.warning("⚠️ Low confidence")
-            with badge2:
+            with b2:
                 st.caption(f"Retrieval strength: {avg_score:.3f}")
 
             st.markdown(answer_text)
@@ -361,6 +359,7 @@ if mode == "Single Document":
         ]
         pdf_bytes = make_pdf_report("smart_doc_copilot_report.pdf", "Smart Document Copilot Report", sections)
         st.download_button("⬇️ Download report", data=pdf_bytes, file_name="smart_doc_copilot_report.pdf", mime="application/pdf")
+
 
 # =======================
 # Mode: Compare Two Docs
