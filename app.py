@@ -167,7 +167,7 @@ if "qa_log" not in st.session_state:
 if mode == "Single Document":
     uploaded_pdf = st.file_uploader("📤 Upload a PDF (optional)", type=["pdf"])
     uploaded_img = st.file_uploader("🖼️ Upload an Image (optional)", type=["png", "jpg", "jpeg"])
-    user_text = st.text_area("✍️ Paste text / notes (optional)", height=140, placeholder="Paste any text you want the bot to use...")
+    user_text = st.text_area("✍️ Paste extra text / notes (optional)", height=120, placeholder="Paste any text you want the bot to use...")
 
     if uploaded_pdf is None and uploaded_img is None and not user_text.strip():
         st.info("Upload a PDF or Image or paste text → Build Index → Start chatting.")
@@ -180,24 +180,23 @@ if mode == "Single Document":
         pdf_text = extract_text_from_pdf(uploaded_pdf)
         full_text_parts.append("=== PDF TEXT ===\n" + pdf_text)
 
-    # Image → OCR (Textract) → text
+    # Image → show + manual text input (Textract blocked in your account)
+    image_manual_text = ""
     if uploaded_img is not None:
         img = Image.open(uploaded_img)
         st.image(img, caption="Uploaded image", use_container_width=True)
 
-        with st.spinner("Extracting text from image (Amazon Textract OCR)..."):
-            image_bytes = uploaded_img.getvalue()
-            ocr_text = textract_image_to_text(image_bytes, region="ap-south-1")
+        st.info("Textract OCR is blocked in this account. Paste the text from the image below (demo-friendly).")
+        image_manual_text = st.text_area(
+            "🧾 Image text (paste here)",
+            height=120,
+            placeholder="Type/paste what’s written in the image so it becomes searchable...",
+        )
 
-        if ocr_text.strip():
-            st.success("Image text extracted ✅")
-            with st.expander("🧾 Extracted image text (OCR)", expanded=False):
-                st.text_area("OCR text", ocr_text, height=160)
-
-            full_text_parts.append("=== IMAGE OCR TEXT ===\n" + ocr_text)
+        if image_manual_text.strip():
+            full_text_parts.append("=== IMAGE TEXT (MANUAL) ===\n" + image_manual_text.strip())
         else:
-            st.warning("No readable text detected in the image.")
-            full_text_parts.append(f"=== IMAGE UPLOADED ===\nFilename: {uploaded_img.name}\n(No OCR text found)")
+            full_text_parts.append(f"=== IMAGE UPLOADED ===\nFilename: {uploaded_img.name}\n(No text provided)")
 
     # User notes
     if user_text.strip():
@@ -230,7 +229,7 @@ if mode == "Single Document":
             st.success("Index ready ✅")
 
     with b:
-        st.info("Chat below. OCR text from images is included in retrieval. Response time appears at bottom.")
+        st.info("Chat below. Evidence + sources included. Response time appears at bottom.")
 
     st.divider()
 
@@ -243,27 +242,63 @@ if mode == "Single Document":
 
     st.divider()
 
+    # -------------------------------
+    # Enhanced Chat
+    # -------------------------------
     st.subheader("3) Chat with your document")
 
     if st.session_state.single_rag is None:
         st.warning("Build the index first to enable chat.")
         st.stop()
 
+    # Top actions
+    topA, topB, topC = st.columns([1, 1, 2])
+    if topA.button("🧹 Clear chat", use_container_width=True):
+        st.session_state.chat = []
+        st.session_state.qa_log = []
+        st.rerun()
+
+    # Suggested questions
+    st.markdown("### ✨ Suggested questions")
+    sq1, sq2, sq3, sq4 = st.columns(4)
+    suggestions = [
+        "Summarize the content in 3 bullet points.",
+        "What are the key numbers or metrics mentioned?",
+        "What are the main risks/limitations?",
+        "What are recommended next steps or actions?"
+    ]
+    clicked = None
+    if sq1.button("🧠 Summary", use_container_width=True): clicked = suggestions[0]
+    if sq2.button("📊 Key metrics", use_container_width=True): clicked = suggestions[1]
+    if sq3.button("⚠️ Risks", use_container_width=True): clicked = suggestions[2]
+    if sq4.button("✅ Next steps", use_container_width=True): clicked = suggestions[3]
+
+    if clicked:
+        st.session_state["_prefill_q"] = clicked
+
+    # Render chat history
     for msg in st.session_state.chat:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    user_q = st.chat_input("Ask something… (try: What text is in the image?)")
+    default_q = st.session_state.pop("_prefill_q", "")
+    user_q = st.chat_input("Ask something… (try: What does the image say?)")
+
+    if default_q:
+        user_q = default_q
 
     if user_q:
         st.session_state.chat.append({"role": "user", "content": user_q})
         with st.chat_message("user"):
             st.markdown(user_q)
 
+        # Retrieve
         with st.spinner("Retrieving sources..."):
             hits, scores = st.session_state.single_rag.search(user_q, k=top_k)
             ctx = [h.text for h in hits]
+            avg_score = (sum(scores) / len(scores)) if scores else 0.0
 
+        # Answer
         with st.spinner("Thinking with Nova Lite..."):
             start_time = time.time()
             ans = ask_with_evidence(user_q, ctx)
@@ -273,6 +308,16 @@ if mode == "Single Document":
         evidence_text = ans.get("evidence", "")
 
         with st.chat_message("assistant"):
+            # Grounding badge
+            badge1, badge2 = st.columns([1, 3])
+            with badge1:
+                if avg_score >= 0.25:
+                    st.success("✅ Grounded")
+                else:
+                    st.warning("⚠️ Low confidence")
+            with badge2:
+                st.caption(f"Retrieval strength: {avg_score:.3f}")
+
             st.markdown(answer_text)
 
             if evidence_text.strip():
@@ -382,3 +427,4 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
