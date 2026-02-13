@@ -1,18 +1,14 @@
-import base64
 import json
 from typing import List, Dict, Any
-
 import boto3
 
 # -------------------------
 # Regions / Model IDs
 # -------------------------
-GEN_REGION = "ap-south-1"   # Nova Lite inference profile is here for you
-EMBED_REGION = "us-east-1"  # embeddings supported here (your earlier setup)
+GEN_REGION = "ap-south-1"   # Nova Lite inference profile region
+EMBED_REGION = "us-east-1"  # embeddings supported region
 
-# Use your inference profile ID (system-defined profile you listed)
-# Example from your output:
-# ID: apac.amazon.nova-lite-v1:0
+# Nova Lite inference profile ID
 NOVA_LITE_MODEL_ID = "apac.amazon.nova-lite-v1:0"
 
 # Embeddings model ID
@@ -69,22 +65,32 @@ def embed_text(text: str, dim: int = 1024) -> List[float]:
         raise ValueError(f"Could not find embedding vector in response keys: {list(out.keys())}")
     return vec
 
+
 def _img_block(image_bytes: bytes, image_format: str) -> Dict[str, Any]:
+    """
+    Build a Bedrock multimodal image content block.
+
+    IMPORTANT:
+    - Provide RAW bytes (not base64, not decoded text).
+    - Ensure format is correct: png/jpeg/webp
+    """
     fmt = (image_format or "png").lower()
     if fmt == "jpg":
         fmt = "jpeg"
     if fmt not in ("png", "jpeg", "webp"):
         fmt = "png"
 
-    # IMPORTANT: pass RAW bytes; boto3 handles encoding internally
     return {"image": {"format": fmt, "source": {"bytes": image_bytes}}}
+
 
 # -------------------------
 # Multimodal (Image -> Text / Insights) using Nova Lite
 # -------------------------
-
 def nova_image_to_text(image_bytes: bytes, image_format: str = "png") -> str:
-    """Extract readable text from an image using Nova Lite multimodal reasoning."""
+    """
+    Extract readable text from an image using Nova Lite.
+    NOTE: Your app should use this ONLY internally for retrieval.
+    """
     brt = get_bedrock_runtime(GEN_REGION)
 
     msg = [
@@ -100,30 +106,40 @@ def nova_image_to_text(image_bytes: bytes, image_format: str = "png") -> str:
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=msg,
-        inferenceConfig={"maxTokens": 800, "temperature": 0.4, "topP": 0.9},
+        inferenceConfig={"maxTokens": 800, "temperature": 0.2, "topP": 0.9},
     )
     return resp["output"]["message"]["content"][0]["text"].strip()
 
-def nova_image_insights(image_bytes: bytes, image_format: str = "png") -> str:
-    """Generate short insights from an image (what it is, key fields, key numbers, issues)."""
+
+def nova_image_insights_brief(image_bytes: bytes, image_format: str = "png") -> str:
+    """
+    Return ONLY:
+    What it is:
+    One useful insight (implication / issue / next step):
+
+    No extra bullets. No key fields. No numbers list. No fluff.
+    """
     brt = get_bedrock_runtime(GEN_REGION)
 
     prompt = """
 You are Smart Document Copilot.
-Analyze the image and provide:
-- What it is (1 line)
-- Key entities/fields (bullets)
-- Key numbers/amounts/dates (bullets if present)
-- One useful insight (implication / issue / next step)
 
-Be concise. Do not invent numbers.
-"""
+Analyze the image and respond in EXACTLY this format (2 lines total):
+
+What it is: <one short line>
+One useful insight (implication / issue / next step): <one short line>
+
+Rules:
+- Keep each line short.
+- Do NOT add extra lines or bullets.
+- Do NOT invent data.
+""".strip()
 
     msg = [
         {
             "role": "user",
             "content": [
-                {"text": prompt.strip()},
+                {"text": prompt},
                 _img_block(image_bytes, image_format),
             ],
         }
@@ -132,7 +148,7 @@ Be concise. Do not invent numbers.
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=msg,
-        inferenceConfig={"maxTokens": 700, "temperature": 0.4, "topP": 0.9},
+        inferenceConfig={"maxTokens": 140, "temperature": 0.2, "topP": 0.9},
     )
     return resp["output"]["message"]["content"][0]["text"].strip()
 
@@ -161,11 +177,12 @@ Return ONLY the type word (no extra text).
 
 Document excerpt:
 {doc_text[:8000]}
-"""
+""".strip()
+
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": 20, "temperature": 0.4, "topP": 0.9},
+        inferenceConfig={"maxTokens": 20, "temperature": 0.2, "topP": 0.9},
     )
     t = resp["output"]["message"]["content"][0]["text"].strip().lower()
     for allowed in ["resume", "invoice", "contract", "research_paper", "generic"]:
@@ -207,11 +224,12 @@ Rules:
 
 Document:
 {doc_text[:14000]}
-"""
+""".strip()
+
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": 900, "temperature": 0.4, "topP": 0.9},
+        inferenceConfig={"maxTokens": 900, "temperature": 0.2, "topP": 0.9},
     )
     return resp["output"]["message"]["content"][0]["text"]
 
@@ -253,12 +271,12 @@ SOURCES:
 
 QUESTION:
 {question}
-"""
+""".strip()
 
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": 700, "temperature": 0.4, "topP": 0.9},
+        inferenceConfig={"maxTokens": 700, "temperature": 0.2, "topP": 0.9},
     )
 
     text = resp["output"]["message"]["content"][0]["text"]
@@ -266,8 +284,7 @@ QUESTION:
     if "Evidence:" in text:
         answer_part, evidence_part = text.split("Evidence:", 1)
     else:
-        answer_part = text
-        evidence_part = ""
+        answer_part, evidence_part = text, ""
 
     return {"answer": answer_part.strip(), "evidence": evidence_part.strip()}
 
@@ -302,7 +319,8 @@ QUESTION:
 
 {label_b} SOURCES:
 {b_block}
-"""
+""".strip()
+
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
@@ -336,11 +354,12 @@ Return ONLY valid JSON like:
 
 Document excerpt:
 {doc_text[:8000]}
-"""
+""".strip()
+
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": 120, "temperature": 0.4, "topP": 0.9},
+        inferenceConfig={"maxTokens": 120, "temperature": 0.3, "topP": 0.9},
     )
     txt = resp["output"]["message"]["content"][0]["text"].strip()
 
@@ -377,11 +396,12 @@ Rules:
 
 Content excerpt:
 {doc_text[:6000]}
-"""
+""".strip()
+
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": 40, "temperature": 0.4, "topP": 0.9},
+        inferenceConfig={"maxTokens": 40, "temperature": 0.3, "topP": 0.9},
     )
 
     title = resp["output"]["message"]["content"][0]["text"].strip()
@@ -418,12 +438,12 @@ Rules:
 
 Document excerpt:
 {doc_text[:9000]}
-"""
+""".strip()
 
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": 260, "temperature": 0.4, "topP": 0.9},
+        inferenceConfig={"maxTokens": 260, "temperature": 0.3, "topP": 0.9},
     )
 
     txt = resp["output"]["message"]["content"][0]["text"].strip()
@@ -440,7 +460,3 @@ Document excerpt:
         pass
 
     return []
-
-
-
-
