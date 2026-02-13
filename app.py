@@ -6,6 +6,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 from rag_index import RagIndex
+from bedrock_utils import recommend_rag_settings
 from bedrock_utils import (
     ask_with_evidence,
     extract_fields_json,
@@ -152,9 +153,6 @@ st.sidebar.header("⚙️ Controls")
 st.sidebar.button("🔄 Reset / New session", on_click=reset_session, use_container_width=True)
 
 mode = st.sidebar.radio("Mode", ["Single Document", "Compare Two Documents"])
-chunk_size = st.sidebar.slider("Chunk size (chars)", 400, 2000, 1000, 100)
-overlap = st.sidebar.slider("Overlap (chars)", 0, 400, 150, 25)
-top_k = st.sidebar.slider("Top-K sources", 2, 8, 4, 1)
 
 st.sidebar.markdown("---")
 st.sidebar.caption("✅ Demo tips:\n- Upload PDF or Image\n- Ask: 'What does the image say?'\n- Show Evidence + Sources\n- Download PDF report")
@@ -482,6 +480,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
