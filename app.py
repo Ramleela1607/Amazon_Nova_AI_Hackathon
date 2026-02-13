@@ -340,55 +340,88 @@ if mode == "Single Document":
     # ========================
     # 📊 Executive Dashboard
     # ========================
-    
     st.subheader("📊 Executive Dashboard")
+    dash_key = f"dashboard:{doc_fp}"
     
-    dash_fp = f"dashboard:{hashlib.md5(full_text[:20000].encode()).hexdigest()}"
+    # Refresh button (forces re-run for dashboard only)
+    dcol1, dcol2 = st.columns([1, 5])
+    with dcol1:
+        if st.button("🔄 Refresh Dashboard", use_container_width=True):
+            st.session_state.pop(dash_key, None)
     
-    if dash_fp not in st.session_state:
-        with st.spinner("Analyzing document for executive insights..."):
-            st.session_state[dash_fp] = generate_dashboard_insights(full_text)
+    if dash_key not in st.session_state:
+        with st.spinner("Analyzing document for dashboard insights..."):
+            st.session_state[dash_key] = generate_dashboard_insights(full_text)
     
-    dashboard = st.session_state.get(dash_fp, {})
+    dashboard = st.session_state.get(dash_key, {}) or {}
     
     summary = dashboard.get("summary", "")
-    key_numbers = dashboard.get("key_numbers", [])
-    key_dates = dashboard.get("key_dates", [])
-    risks = dashboard.get("risks", [])
-    next_actions = dashboard.get("next_actions", [])
+    doc_type_guess = dashboard.get("doc_type_guess", "generic")
+    risk_score = int(dashboard.get("risk_score", 0) or 0)
+    key_numbers = dashboard.get("key_numbers", []) or []
+    key_dates = dashboard.get("key_dates", []) or []
+    risks = dashboard.get("risks", []) or []
+    next_actions = dashboard.get("next_actions", []) or []
     
-    # 🔹 Summary
-    if summary:
+    # --- Top Row: Type + Risk
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Doc Type (Nova)", str(doc_type_guess))
+    c2.metric("Risk Score", f"{risk_score}/100")
+    
+    # Risk meter
+    with c3:
+        st.caption("Risk Meter")
+        st.progress(min(max(risk_score, 0), 100))
+    
+    # --- Summary
+    if summary.strip():
         st.markdown("### 🧾 Executive Summary")
         st.markdown(summary)
     
-    # 🔹 KPI Cards
-    if key_numbers or key_dates:
-        st.markdown("### 📌 Key Highlights")
-        cols = st.columns(3)
+    # --- Key Numbers → Chart
+    numeric_rows = []
+    for it in key_numbers:
+        label = (it or {}).get("label", "").strip()
+        val = (it or {}).get("value", "")
+        num = try_parse_number(val)
+        if label and num is not None:
+            numeric_rows.append({"label": label, "value": num, "raw": str(val)})
     
-        idx = 0
-        for item in key_numbers[:3]:
-            cols[idx % 3].metric(item.get("label", "Metric"), item.get("value", "-"))
-            idx += 1
+    if numeric_rows:
+        st.markdown("### 📈 Key Numbers (Chart)")
+        df = pd.DataFrame(numeric_rows).sort_values("value", ascending=False)
+        st.bar_chart(df.set_index("label")[["value"]])
     
-        for item in key_dates[:3]:
-            cols[idx % 3].metric(item.get("label", "Date"), item.get("value", "-"))
-            idx += 1
+        with st.expander("Numbers (raw)", expanded=False):
+            st.dataframe(df[["label", "raw"]], use_container_width=True)
+    else:
+        if key_numbers:
+            st.markdown("### 📌 Key Numbers")
+            for it in key_numbers[:6]:
+                st.markdown(f"- **{it.get('label','Metric')}**: {it.get('value','-')}")
+        else:
+            st.caption("No key numeric metrics detected for charting.")
     
-    # 🔹 Risks
+    # --- Key Dates Timeline
+    if key_dates:
+        st.markdown("### 🗓️ Key Dates Timeline")
+        df_dates = pd.DataFrame(key_dates)
+        df_dates = df_dates.rename(columns={"label": "Event", "value": "Date"})
+        st.dataframe(df_dates, use_container_width=True)
+    
+    # --- Risks + Actions
     if risks:
-        st.markdown("### ⚠️ Risks Identified")
-        for r in risks:
+        st.markdown("### ⚠️ Risks")
+        for r in risks[:6]:
             st.markdown(f"- {r}")
     
-    # 🔹 Next Actions
     if next_actions:
-        st.markdown("### ✅ Recommended Next Actions")
-        for a in next_actions:
+        st.markdown("### ✅ Next Actions")
+        for a in next_actions[:6]:
             st.markdown(f"- {a}")
     
     st.divider()
+
 
     doc_fp = hashlib.md5(full_text[:20000].encode("utf-8", errors="ignore")).hexdigest()
 
@@ -591,6 +624,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
