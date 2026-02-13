@@ -264,42 +264,45 @@ if mode == "Single Document":
         pdf_text = extract_text_from_pdf(uploaded_pdf)
         full_text_parts.append("=== PDF TEXT ===\n" + pdf_text)
 
-    # Image -> hidden OCR text + visible brief insights
+    # Image -> internal OCR + cached brief insights
     if uploaded_img is not None:
-        img_preview = Image.open(uploaded_img)
-        st.image(img_preview, caption="Uploaded image", use_container_width=True)
-
-        # Normalize to PNG bytes (fixes MIME mismatch)
+    
+        # 1️⃣ Normalize to PNG bytes (REQUIRED)
         img_rgb = Image.open(uploaded_img).convert("RGB")
         buf = io.BytesIO()
         img_rgb.save(buf, format="PNG")
         img_bytes = buf.getvalue()
-        img_fmt = "png"
-
-        with st.spinner("🔍 Reading image with Nova Lite..."):
-            ocr_text = ""
-            try:
-                ocr_text = nova_image_to_text(img_bytes, image_format=img_fmt)
-            except Exception as e:
-                st.error(f"Image read failed: {e}")
-
-        with st.spinner("💡 Generating image insights..."):
-            insights = ""
-            try:
-                insights = nova_image_insights_brief(img_bytes, image_format=img_fmt)
-            except Exception as e:
-                st.error(f"Image insights failed: {e}")
-
-        # Show ONLY brief insights
+    
+        # 2️⃣ Compute doc fingerprint BEFORE caching insights
+        temp_fp_src = img_bytes[:20000]
+        doc_fp = hashlib.md5(temp_fp_src).hexdigest()
+    
+        img_cache_key = f"insights:{doc_fp}"
+    
+        # 3️⃣ Generate insights only once (prevents refresh flicker)
+        if img_cache_key not in st.session_state:
+            with st.spinner("💡 Generating image insights..."):
+                st.session_state[img_cache_key] = nova_image_insights_brief(
+                    img_bytes,
+                    image_format="png"
+                )
+    
+        insights = st.session_state[img_cache_key]
+    
+        # 4️⃣ Display ONLY the 2-line insights
         if insights.strip():
             st.subheader("Insights")
             st.markdown(insights.replace("\n", "  \n"))
-
-        # Include OCR text for indexing/suggestions, but DO NOT DISPLAY
+    
+        # 5️⃣ Still extract OCR internally for RAG (not shown to user)
+        ocr_text = nova_image_to_text(img_bytes, image_format="png")
+    
         if ocr_text.strip():
-            full_text_parts.append("=== IMAGE TEXT (HIDDEN) ===\n" + ocr_text)
+            full_text_parts.append("=== IMAGE TEXT ===\n" + ocr_text)
+    
         if insights.strip():
             full_text_parts.append("=== IMAGE INSIGHTS ===\n" + insights)
+
 
     # Notes
     if user_text.strip():
@@ -549,5 +552,6 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
