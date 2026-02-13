@@ -370,22 +370,38 @@ if mode == "Single Document":
 
     st.subheader("4) Export report (PDF)")
     if st.button("📄 Generate PDF report"):
+        with st.spinner("Creating a title with Nova Lite..."):
+            report_title = generate_report_title(full_text)
+    
         auto_type = detect_doc_type(full_text)
-
+    
         qa_text = ""
         for i, item in enumerate(st.session_state.qa_log[-10:], start=1):
             qa_text += f"{i}. Q: {item['question']}\nA: {item['answer']}\n"
             if item.get("evidence"):
                 qa_text += f"Evidence:\n{item['evidence']}\n"
             qa_text += "\n"
-
+    
         sections = [
+            ("Report title (generated)", report_title),
             ("Document type (auto)", auto_type),
             ("Combined text preview (first 1200 chars)", full_text[:1200]),
             ("Recent Q&A (up to last 10)", qa_text or "No Q&A yet."),
         ]
-        pdf_bytes = make_pdf_report("smart_doc_copilot_report.pdf", "Smart Document Copilot Report", sections)
-        st.download_button("⬇️ Download report", data=pdf_bytes, file_name="smart_doc_copilot_report.pdf", mime="application/pdf")
+    
+        safe_filename = "".join(ch for ch in report_title if ch.isalnum() or ch in (" ", "-", "_")).strip()
+        safe_filename = safe_filename.replace(" ", "_") or "Smart_Document_Report"
+        file_name = f"{safe_filename}.pdf"
+    
+        pdf_bytes = make_pdf_report(file_name, report_title, sections)
+        st.download_button(
+            "⬇️ Download report",
+            data=pdf_bytes,
+            file_name=file_name,
+            mime="application/pdf",
+            use_container_width=True
+        )
+
 
 
 # =======================
@@ -466,6 +482,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
