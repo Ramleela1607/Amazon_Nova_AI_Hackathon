@@ -317,8 +317,8 @@ if mode == "Single Document":
         # - Do NOT display extracted image text
         # - Only display the 2-line insights
         if insights.strip():
-            st.subheader("🖼️ Image Insights")
-            st.markdown(insights)
+            st.subheader("Insights")
+            st.markdown(insights.replace("\n", "  \n"))
     
         # Include BOTH into retrieval text (even though OCR is not displayed)
         if ocr_text.strip():
@@ -614,6 +614,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
