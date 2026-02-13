@@ -62,6 +62,20 @@ def embed_text(text: str, dim: int = 1024) -> List[float]:
     if vec is None:
         raise ValueError(f"Could not find embedding vector in response keys: {list(out.keys())}")
     return vec
+    
+def textract_image_to_text(image_bytes: bytes, region: str = "ap-south-1") -> str:
+    """
+    Extracts text from an image using Amazon Textract.
+    Works great on Streamlit Cloud (no system OCR installs needed).
+    """
+    textract = boto3.client("textract", region_name=region)
+    resp = textract.detect_document_text(Document={"Bytes": image_bytes})
+
+    lines = []
+    for block in resp.get("Blocks", []):
+        if block.get("BlockType") == "LINE" and block.get("Text"):
+            lines.append(block["Text"])
+    return "\n".join(lines).strip()
 
 
 # ---------------- Doc type + Extraction ----------------
@@ -261,4 +275,5 @@ QUESTION:
         messages=[{"role": "user", "content": [{"text": prompt}]}],
     )
     return resp["output"]["message"]["content"][0]["text"]
+
 
