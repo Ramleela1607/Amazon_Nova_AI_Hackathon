@@ -20,23 +20,23 @@ def get_bedrock_runtime(region: str):
     return boto3.client("bedrock-runtime", region_name=region)
 
 
+import re
+
 def _strip_code_fences(s: str) -> str:
     s = (s or "").strip()
-    # remove ```json ... ``` or ``` ... ```
     if s.startswith("```"):
         s = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", s)
         s = re.sub(r"\s*```$", "", s)
     return s.strip()
 
-def _extract_json_array(s: str) -> str:
+def _extract_json_object(s: str) -> str:
     """
-    Return the first JSON array substring found in s, e.g. [ ... ].
-    Raises ValueError if not found.
+    Returns the first JSON object substring found in s: { ... }
     """
     s = _strip_code_fences(s)
-    m = re.search(r"\[[\s\S]*\]", s)
+    m = re.search(r"\{[\s\S]*\}", s)
     if not m:
-        raise ValueError("No JSON array found")
+        raise ValueError("No JSON object found")
     return m.group(0)
 
 
@@ -550,21 +550,21 @@ Document excerpt:
 # -------------------------
 def generate_dashboard_insights(doc_text: str) -> dict:
     """
-    Generate structured executive dashboard insights.
-    Returns JSON with summary, key_numbers, key_dates, risks, next_actions.
+    Hackathon-grade executive dashboard output.
+    Includes risk score + structured insights for charts/timeline.
     """
-
     brt = get_bedrock_runtime(GEN_REGION)
-
-    excerpt = (doc_text or "")[:12000]
+    excerpt = (doc_text or "").strip()[:12000]
 
     prompt = f"""
 You are an executive document analyst.
 
-Analyze the document and return ONLY valid JSON in this format:
+Return ONLY valid JSON in EXACTLY this format:
 
 {{
   "summary": "2-3 sentence executive summary",
+  "doc_type_guess": "invoice|contract|resume|research_paper|generic",
+  "risk_score": 0,
   "key_numbers": [
     {{"label": "Metric name", "value": "value"}}
   ],
@@ -580,11 +580,11 @@ Analyze the document and return ONLY valid JSON in this format:
 }}
 
 Rules:
-- Be factual.
-- Extract real values only (do NOT invent).
-- Keep lists concise (max 5 each).
-- If none found, return empty list [].
-- Return ONLY JSON. No commentary.
+- risk_score must be integer 0 to 100.
+- Extract REAL visible values only. Do NOT invent numbers/dates.
+- Keep each list max 6 items.
+- If not found, return empty lists [].
+- Return ONLY JSON. No extra text.
 
 Document:
 {excerpt}
@@ -593,24 +593,28 @@ Document:
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": 600, "temperature": 0.2, "topP": 0.9},
+        inferenceConfig={"maxTokens": 650, "temperature": 0.2, "topP": 0.9},
     )
 
-    txt = resp["output"]["message"]["content"][0]["text"].strip()
+    txt = (resp["output"]["message"]["content"][0]["text"] or "").strip()
 
-    # Try parsing safely
+    # Parse robustly (handles accidental extra text)
     try:
-        data = json.loads(txt)
-        return data
+        return json.loads(txt)
     except Exception:
-        # Fallback structure
-        return {
-            "summary": "",
-            "key_numbers": [],
-            "key_dates": [],
-            "risks": [],
-            "next_actions": [],
-        }
+        try:
+            return json.loads(_extract_json_object(txt))
+        except Exception:
+            return {
+                "summary": "",
+                "doc_type_guess": "generic",
+                "risk_score": 0,
+                "key_numbers": [],
+                "key_dates": [],
+                "risks": [],
+                "next_actions": [],
+            }
+
 
 
 
