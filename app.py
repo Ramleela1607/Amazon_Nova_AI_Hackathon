@@ -338,6 +338,8 @@ if mode == "Single Document":
 
     # ✅ IMPORTANT: compute doc_fp BEFORE dashboard / caching
     doc_fp = hashlib.md5(full_text[:20000].encode("utf-8", errors="ignore")).hexdigest()
+    local_dates = extract_dates_with_events(full_text, max_items=80)
+
 
     # ========================
     # 📊 Executive Dashboard
@@ -399,26 +401,13 @@ if mode == "Single Document":
 
     if key_dates:
         st.markdown("### 🗓️ Key Dates Timeline")
-    
-        df_dates = pd.DataFrame(key_dates)
-    
-        if "label" in df_dates.columns and "value" in df_dates.columns:
-            df_dates = df_dates.rename(columns={"label": "Event", "value": "Date"})
-    
-            # Sort if dates look sortable
-            try:
-                df_dates["_parsed"] = pd.to_datetime(df_dates["Date"], errors="coerce")
-                df_dates = df_dates.sort_values("_parsed")
-                df_dates = df_dates.drop(columns=["_parsed"])
-            except Exception:
-                pass
-    
+        date_source = local_dates  # deterministic extraction
+        if date_source:
+            df_dates = pd.DataFrame(date_source).rename(columns={"label": "Event", "value": "Date"})
             st.dataframe(df_dates, use_container_width=True)
         else:
-            st.caption("Nova returned dates but format was unexpected.")
-    else:
-        st.caption("No key timeline events detected.")
-
+            st.caption("No dates detected in the document.")
+        
     if risks:
         st.markdown("### ⚠️ Risks")
         for r in risks[:6]:
@@ -686,4 +675,5 @@ def extract_dates_with_events(text: str, max_items: int = 60):
             break
 
     return results
+
 
