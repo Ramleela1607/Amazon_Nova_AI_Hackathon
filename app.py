@@ -19,7 +19,7 @@ from bedrock_utils import (
     DOC_TYPES,
     recommend_rag_settings,
     nova_image_to_text,
-    nova_image_insights_brief,   # ✅ NEW: brief insights only
+    nova_image_insights_brief,   # brief only (2 lines)
     generate_report_title,
     suggest_questions,
 )
@@ -32,9 +32,7 @@ st.markdown("""
 <style>
 /* ----------------------------
    VIDEO-LIKE ANIMATED BACKGROUND
-   (CSS animated gradients + moving blobs)
    ---------------------------- */
-
 .stApp {
   background: radial-gradient(circle at 10% 20%, rgba(224,242,254,0.95), transparent 45%),
               radial-gradient(circle at 90% 10%, rgba(252,231,243,0.92), transparent 45%),
@@ -45,8 +43,6 @@ st.markdown("""
   position: relative;
   overflow-x: hidden;
 }
-
-/* Animated overlay layer (looks like a subtle moving video) */
 .stApp::before{
   content:"";
   position: fixed;
@@ -63,7 +59,6 @@ st.markdown("""
   animation: floatBg 14s ease-in-out infinite alternate;
   opacity: 0.9;
 }
-
 @keyframes floatBg {
   0%   { transform: translate3d(-20px, -18px, 0) scale(1.02); }
   50%  { transform: translate3d(24px, 16px, 0) scale(1.06); }
@@ -99,15 +94,6 @@ section[data-testid="stSidebar"] *{
 h1, h2, h3 {
   color: #0b1220 !important;
   text-shadow: 0 1px 0 rgba(255,255,255,0.65);
-}
-
-/* Metric cards */
-div[data-testid="stMetric"] {
-  background: rgba(255,255,255,0.88);
-  border: 1px solid rgba(15,23,42,0.10);
-  padding: 14px;
-  border-radius: 18px;
-  box-shadow: 0 10px 26px rgba(2,6,23,0.08);
 }
 
 /* Expanders */
@@ -152,11 +138,6 @@ div[data-baseweb="input"] input, textarea {
   box-shadow: 0 10px 26px rgba(99,102,241,0.18);
 }
 
-/* Suggestion buttons (make them pop) */
-button[kind="secondary"]{
-  background: rgba(255,255,255,0.92) !important;
-}
-
 /* Links */
 a { color: #1d4ed8 !important; }
 
@@ -164,7 +145,6 @@ a { color: #1d4ed8 !important; }
 .block-container { padding-top: 1.1rem; }
 </style>
 """, unsafe_allow_html=True)
-
 
 # ---------- Header ----------
 st.title("📄 Smart Document Copilot")
@@ -219,9 +199,9 @@ def reset_session():
         "single_rag", "index_fp",
         "last_doc_fp", "auto_rag_settings",
         "suggest_fp", "suggested_questions",
-        "latest_answer", "latest_evidence", "latest_sources",
+        "latest_answer", "latest_evidence", "latest_sources", "latest_q", "latest_rt",
+        "rag_a", "rag_b",
         "pending_question",
-        "compare_fp", "rag_a", "rag_b",
     ]:
         if k in st.session_state:
             del st.session_state[k]
@@ -262,14 +242,6 @@ user_interest = st.sidebar.selectbox(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.caption(
-    "✅ Demo tips:\n"
-    "- Upload a research paper PDF\n"
-    "- Upload an invoice image\n"
-    "- Click a suggested question\n"
-    "- Show Evidence + Sources\n"
-    "- Export PDF report\n"
-)
 
 # =======================
 # Mode: Single Document
@@ -279,61 +251,61 @@ if mode == "Single Document":
 
     uploaded_pdf = st.file_uploader("📤 Upload a PDF (optional)", type=["pdf"], key=f"pdf_uploader_{k}")
     uploaded_img = st.file_uploader("🖼️ Upload an Image (optional)", type=["png", "jpg", "jpeg", "webp"], key=f"img_uploader_{k}")
-    user_text = st.text_area("✍️ Paste extra text / notes (optional)", height=100)
+    user_text = st.text_area("✍️ Paste extra text / notes (optional)", height=90)
 
     if uploaded_pdf is None and uploaded_img is None and not user_text.strip():
         st.info("Upload a PDF or Image (or paste text) → Index builds automatically → Start chatting.")
         st.stop()
 
     full_text_parts = []
-    image_ocr_text = ""
-    image_brief_insights = ""
 
     # PDF
     if uploaded_pdf is not None:
         pdf_text = extract_text_from_pdf(uploaded_pdf)
         full_text_parts.append("=== PDF TEXT ===\n" + pdf_text)
 
-    # Image -> internal text + brief insights (UI shows ONLY brief insights)
+    # Image -> hidden OCR text + visible brief insights
     if uploaded_img is not None:
-        img = Image.open(uploaded_img)
-        st.image(img, caption="Uploaded image", use_container_width=True)
-    
-        # ✅ ADD THIS HERE (normalize to PNG bytes so Bedrock detects correct MIME)
+        img_preview = Image.open(uploaded_img)
+        st.image(img_preview, caption="Uploaded image", use_container_width=True)
+
+        # Normalize to PNG bytes (fixes MIME mismatch)
         img_rgb = Image.open(uploaded_img).convert("RGB")
         buf = io.BytesIO()
         img_rgb.save(buf, format="PNG")
         img_bytes = buf.getvalue()
-        img_fmt = "png"  # always png after conversion
-    
-        # Use Nova multimodal (internal retrieval text + brief insights)
+        img_fmt = "png"
+
         with st.spinner("🔍 Reading image with Nova Lite..."):
-            ocr_text = nova_image_to_text(img_bytes, image_format=img_fmt)
-    
+            ocr_text = ""
+            try:
+                ocr_text = nova_image_to_text(img_bytes, image_format=img_fmt)
+            except Exception as e:
+                st.error(f"Image read failed: {e}")
+
         with st.spinner("💡 Generating image insights..."):
-            insights = nova_image_insights_brief(img_bytes, image_format=img_fmt)
-    
-        # ✅ IMPORTANT (per your requirement):
-        # - Do NOT display extracted image text
-        # - Only display the 2-line insights
+            insights = ""
+            try:
+                insights = nova_image_insights_brief(img_bytes, image_format=img_fmt)
+            except Exception as e:
+                st.error(f"Image insights failed: {e}")
+
+        # Show ONLY brief insights
         if insights.strip():
             st.subheader("Insights")
             st.markdown(insights.replace("\n", "  \n"))
-    
-        # Include BOTH into retrieval text (even though OCR is not displayed)
-        if ocr_text.strip():
-            full_text_parts.append("=== IMAGE TEXT (NOVA) ===\n" + ocr_text)
-        if insights.strip():
-            full_text_parts.append("=== IMAGE INSIGHTS (NOVA) ===\n" + insights)
 
+        # Include OCR text for indexing/suggestions, but DO NOT DISPLAY
+        if ocr_text.strip():
+            full_text_parts.append("=== IMAGE TEXT (HIDDEN) ===\n" + ocr_text)
+        if insights.strip():
+            full_text_parts.append("=== IMAGE INSIGHTS ===\n" + insights)
 
     # Notes
     if user_text.strip():
         full_text_parts.append("=== USER NOTES ===\n" + user_text.strip())
 
     full_text = "\n\n".join(full_text_parts)
-
-    # doc fingerprint
     doc_fp = hashlib.md5(full_text[:20000].encode("utf-8", errors="ignore")).hexdigest()
 
     # Auto settings per doc
@@ -341,25 +313,22 @@ if mode == "Single Document":
         st.session_state["last_doc_fp"] = doc_fp
         with st.spinner("⚙️ Nova is auto-optimizing retrieval settings..."):
             st.session_state["auto_rag_settings"] = recommend_rag_settings(full_text)
-
-        # reset suggestion cache
-        for kk in ["suggest_fp", "suggested_questions"]:
-            if kk in st.session_state:
-                del st.session_state[kk]
-
-        # also force index rebuild
+        # reset suggestions
+        st.session_state.pop("suggest_fp", None)
+        st.session_state.pop("suggested_questions", None)
+        # force index rebuild
         st.session_state.pop("index_fp", None)
 
     rec = st.session_state.get("auto_rag_settings", {"chunk_size": 1000, "overlap": 150, "top_k": 4})
     auto_chunk_size, auto_overlap, auto_top_k = rec["chunk_size"], rec["overlap"], rec["top_k"]
 
-    # ✅ Retrieval settings ONLY in sidebar (adjustable, but auto suggested)
+    # Retrieval settings ONLY in sidebar (auto + adjustable)
     st.sidebar.subheader("🔎 Retrieval settings")
     use_auto = st.sidebar.toggle("Use Nova auto-optimized settings", value=True)
 
     if use_auto:
         chunk_size, overlap, top_k = auto_chunk_size, auto_overlap, auto_top_k
-        st.sidebar.caption(f"Auto suggested: chunk={chunk_size}, overlap={overlap}, top_k={top_k}")
+        st.sidebar.caption(f"Auto: chunk={chunk_size}, overlap={overlap}, top_k={top_k}")
     else:
         chunk_size = st.sidebar.slider("Chunk size (chars)", 300, 2000, int(auto_chunk_size), 50)
         overlap = st.sidebar.slider("Overlap (chars)", 0, 400, int(auto_overlap), 25)
@@ -368,7 +337,7 @@ if mode == "Single Document":
     if st.sidebar.button("♻️ Rebuild index now", use_container_width=True):
         st.session_state.pop("index_fp", None)
 
-    # ✅ auto build index
+    # Auto build index
     build_index_if_needed(full_text, chunk_size=chunk_size, overlap=overlap)
 
     st.divider()
@@ -390,7 +359,9 @@ if mode == "Single Document":
     if st.session_state.get("suggest_fp") != suggest_fp:
         st.session_state["suggest_fp"] = suggest_fp
         with st.spinner("Generating questions from your document..."):
-            st.session_state["suggested_questions"] = suggest_questions(full_text, user_interest=user_interest, n=6)
+            st.session_state["suggested_questions"] = suggest_questions(
+                full_text, user_interest=user_interest, n=6
+            )
 
     qs = st.session_state.get("suggested_questions", [])
     if qs:
@@ -401,107 +372,72 @@ if mode == "Single Document":
                     st.session_state["pending_question"] = q
                     st.rerun()
     else:
-        st.warning("Nova couldn’t generate suggestions for this document. Try uploading a richer document.")
+        st.caption("Suggestions unavailable for this upload.")
 
     if st.button("🔄 Refresh questions", use_container_width=True):
-        with st.spinner("Refreshing questions from your document..."):
-            st.session_state["suggested_questions"] = suggest_questions(full_text, user_interest=user_interest, n=6)
+        with st.spinner("Refreshing questions..."):
+            st.session_state["suggested_questions"] = suggest_questions(
+                full_text, user_interest=user_interest, n=6
+            )
         st.rerun()
 
     st.divider()
 
-    # ✅ Chat section (NO accumulating outputs)
+    # Chat (INLINE input)
     st.subheader("3) Chat with your document")
     st.markdown("#### 💬 Ask a question")
-    # ---------------- Chat Input (INLINE, NOT bottom pinned) ----------------
-    input_col, button_col = st.columns([5, 1])
-    
-    with input_col:
-        user_q = st.text_input(
-            "Type your question",
-            placeholder="e.g., What are the key findings and their implications?",
-            label_visibility="collapsed",
-            key="inline_chat_input"
-        )
-    
-    with button_col:
-        ask_clicked = st.button("Ask", type="primary", use_container_width=True)
-    
-    if ask_clicked and user_q.strip():
-    
-        # Clear previous chat (you said you don't want accumulation)
-        st.session_state.chat = []
-    
-        rag = st.session_state.get("single_rag", None)
-        if not isinstance(rag, RagIndex):
-            st.error("Index not ready. Click **Build Index** first.")
-            st.stop()
-    
-        # Show user message
-        st.session_state.chat.append({"role": "user", "content": user_q})
-        with st.chat_message("user"):
-            st.markdown(user_q)
-    
-        # Retrieve
-        with st.spinner("Retrieving sources..."):
-            hits, scores = rag.search(user_q, k=top_k)
-            ctx = [h.text for h in hits]
-    
-        # Answer
-        with st.spinner("Thinking with Nova Lite..."):
-            start_time = time.time()
-            ans = ask_with_evidence(user_q, ctx)
-            response_time = round(time.time() - start_time, 2)
-    
-        answer_text = ans.get("answer", "").strip()
-        evidence_text = ans.get("evidence", "").strip()
-    
-        with st.chat_message("assistant"):
-            st.markdown(answer_text if answer_text else "I don't know based on the document.")
-    
-            if evidence_text:
-                with st.expander("📌 Evidence"):
-                    st.markdown(evidence_text)
-    
-            st.markdown("---")
-            st.caption(f"⏱ Average response time: {response_time} sec")
-
 
     rag = st.session_state.get("single_rag", None)
     if not isinstance(rag, RagIndex):
-        st.error("Index not ready. Try clicking **Rebuild index now** in the sidebar, or Reset.")
+        st.error("Index not ready. Click **Rebuild index now** in the sidebar or Reset.")
         st.stop()
 
     if len(full_text.strip()) < 50:
         st.warning("Not enough text to chat. Upload a PDF or a text-heavy image.")
         st.stop()
 
-    # Ask UI
-    user_q = None
-    if user_q:
-        user_q = user_q.strip()
-        if user_q:
-            with st.spinner("Retrieving sources..."):
-                hits, scores = rag.search(user_q, k=top_k)
-                ctx = [h.text for h in hits]
+    # If user clicked suggestion, run it immediately
+    suggested_q = st.session_state.pop("pending_question", "")
 
-            with st.spinner("Thinking with Nova Lite..."):
-                start_time = time.time()
-                ans = ask_with_evidence(user_q, ctx)
-                response_time = round(time.time() - start_time, 2)
+    input_col, button_col = st.columns([5, 1])
+    with input_col:
+        user_q = st.text_input(
+            "Type your question",
+            value=suggested_q,
+            placeholder="e.g., What are the key findings and implications?",
+            label_visibility="collapsed",
+            key="inline_chat_input",
+        )
+    with button_col:
+        ask_clicked = st.button("Ask", type="primary", use_container_width=True)
 
-            answer_text = ans.get("answer", "").strip()
-            evidence_text = ans.get("evidence", "").strip()
+    if ask_clicked and user_q.strip():
+        q = user_q.strip()
 
-            st.session_state["latest_answer"] = answer_text if answer_text else "I don't know based on the document."
-            st.session_state["latest_evidence"] = evidence_text
-            st.session_state["latest_sources"] = list(zip(hits, scores))
-            st.session_state["latest_q"] = user_q
-            st.session_state["latest_rt"] = response_time
+        # Do NOT accumulate previous outputs: overwrite latest result only
+        st.session_state["latest_q"] = q
 
-    # ✅ Render ONLY latest answer (replaces previous)
+        with st.spinner("Retrieving sources..."):
+            hits, scores = rag.search(q, k=top_k)
+            ctx = [h.text for h in hits]
+
+        with st.spinner("Thinking with Nova Lite..."):
+            start_time = time.time()
+            ans = ask_with_evidence(q, ctx)
+            response_time = round(time.time() - start_time, 2)
+
+        st.session_state["latest_answer"] = (ans.get("answer", "") or "").strip() or "I don't know based on the document."
+        st.session_state["latest_evidence"] = (ans.get("evidence", "") or "").strip()
+        st.session_state["latest_sources"] = list(zip(hits, scores))
+        st.session_state["latest_rt"] = response_time
+
+        # Clear the input box without touching session_state widget key directly
+        st.session_state["inline_chat_input"] = ""
+        st.rerun()
+
+    # Render ONLY latest answer (replaces previous)
     if st.session_state.get("latest_answer"):
-        st.markdown(f"### ✅ Latest Answer")
+        st.markdown("### ✅ Latest Answer")
         st.markdown(f"**Question:** {st.session_state.get('latest_q','')}")
         st.markdown(st.session_state.get("latest_answer", ""))
 
@@ -510,19 +446,11 @@ if mode == "Single Document":
             with st.expander("📌 Evidence (exact quotes)"):
                 st.markdown(ev)
 
-        sources = st.session_state.get("latest_sources", [])
-        if sources:
-            with st.expander("📚 Retrieved sources (debug)", expanded=False):
-                for i, (h, s) in enumerate(sources, start=1):
-                    st.markdown(f"**Source {i} • score {s:.3f} • chunk #{h.chunk_id}**")
-                    st.write(h.text[:1200])
-                    st.markdown("---")
-
         st.caption(f"⏱ Average response time: {st.session_state.get('latest_rt', 0)} sec")
 
     st.divider()
 
-    # Export
+    # Export PDF
     st.subheader("4) Export report (PDF)")
     if st.button("📄 Generate PDF report", use_container_width=True):
         with st.spinner("Creating a title with Nova Lite..."):
@@ -614,9 +542,3 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
-
-
-
-
-
-
