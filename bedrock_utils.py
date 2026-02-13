@@ -73,16 +73,6 @@ def embed_text(text: str, dim: int = 1024) -> List[float]:
 # -------------------------
 # Multimodal (Image -> Text / Insights) using Nova Lite
 # -------------------------
-def _img_block(image_bytes: bytes, image_format: str) -> Dict[str, Any]:
-    # Bedrock Converse expects base64-encoded bytes for images in JSON payload.
-    b64 = base64.b64encode(image_bytes).decode("utf-8")
-    fmt = (image_format or "png").lower()
-    if fmt == "jpg":
-        fmt = "jpeg"
-    if fmt not in ("png", "jpeg", "webp"):
-        fmt = "png"
-    return {"image": {"format": fmt, "source": {"bytes": b64}}}
-
 
 def nova_image_to_text(image_bytes: bytes, image_format: str = "png") -> str:
     """Extract readable text from an image using Nova Lite multimodal reasoning."""
@@ -104,7 +94,6 @@ def nova_image_to_text(image_bytes: bytes, image_format: str = "png") -> str:
         inferenceConfig={"maxTokens": 800, "temperature": 0.0, "topP": 0.9},
     )
     return resp["output"]["message"]["content"][0]["text"].strip()
-
 
 def nova_image_insights(image_bytes: bytes, image_format: str = "png") -> str:
     """Generate short insights from an image (what it is, key fields, key numbers, issues)."""
@@ -449,3 +438,4 @@ Document excerpt:
         "What information is missing or unclear?",
         "What is the main purpose here?",
     ][:n]
+
