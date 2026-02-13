@@ -1,9 +1,9 @@
 import io
 import time
+import hashlib
 import streamlit as st
 from pypdf import PdfReader
 from PIL import Image
-import hashlib
 
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
@@ -93,7 +93,6 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-
 # ---------- Helpers ----------
 def extract_text_from_pdf(file) -> str:
     reader = PdfReader(file)
@@ -103,7 +102,6 @@ def extract_text_from_pdf(file) -> str:
         texts.append(f"\n\n--- Page {i+1} ---\n{page_text}")
     return "".join(texts)
 
-
 def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150):
     chunks = []
     start = 0
@@ -112,9 +110,8 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150):
         chunk = text[start:end].strip()
         if chunk:
             chunks.append(chunk)
-        start += chunk_size - overlap
+        start += max(1, chunk_size - overlap)
     return chunks
-
 
 def make_pdf_report(filename: str, title: str, sections: list[tuple[str, str]]) -> bytes:
     styles = getSampleStyleSheet()
@@ -136,27 +133,33 @@ def make_pdf_report(filename: str, title: str, sections: list[tuple[str, str]]) 
     with open(path, "rb") as f:
         return f.read()
 
-
 def reset_session():
-    # Force brand-new uploader widgets
     st.session_state["uploader_key"] = st.session_state.get("uploader_key", 0) + 1
+    st.session_state["q_key"] = st.session_state.get("q_key", 0) + 1  # resets question box too
 
-    # Clear state
     for k in [
         "chat", "qa_log", "single_rag",
         "rag_a", "rag_b", "last_compare", "last_compare_q",
         "pending_question",
-        "suggested_by_interest",
         "last_doc_fp",
         "auto_rag_settings",
-        "typed_q",
-        "_prefill_q",
+        "suggested_questions",
+        "suggest_fp",
     ]:
         if k in st.session_state:
             del st.session_state[k]
 
     st.rerun()
 
+# ---------- Session init ----------
+if "chat" not in st.session_state:
+    st.session_state.chat = []
+if "qa_log" not in st.session_state:
+    st.session_state.qa_log = []
+if "uploader_key" not in st.session_state:
+    st.session_state.uploader_key = 0
+if "q_key" not in st.session_state:
+    st.session_state.q_key = 0
 
 # ---------- Sidebar ----------
 st.sidebar.header("⚙️ Controls")
@@ -180,34 +183,14 @@ st.sidebar.caption(
     "- Export PDF report\n"
 )
 
-
-# ---------- Session init ----------
-if "chat" not in st.session_state:
-    st.session_state.chat = []
-if "qa_log" not in st.session_state:
-    st.session_state.qa_log = []
-if "suggested_by_interest" not in st.session_state:
-    st.session_state.suggested_by_interest = {}
-if "uploader_key" not in st.session_state:
-    st.session_state.uploader_key = 0
-
-
 # =======================
 # Mode: Single Document
 # =======================
 if mode == "Single Document":
     k = st.session_state.get("uploader_key", 0)
 
-    uploaded_pdf = st.file_uploader(
-        "📤 Upload a PDF (optional)",
-        type=["pdf"],
-        key=f"pdf_uploader_{k}",
-    )
-    uploaded_img = st.file_uploader(
-        "🖼️ Upload an Image (optional)",
-        type=["png", "jpg", "jpeg", "webp"],
-        key=f"img_uploader_{k}",
-    )
+    uploaded_pdf = st.file_uploader("📤 Upload a PDF (optional)", type=["pdf"], key=f"pdf_uploader_{k}")
+    uploaded_img = st.file_uploader("🖼️ Upload an Image (optional)", type=["png", "jpg", "jpeg", "webp"], key=f"img_uploader_{k}")
     user_text = st.text_area("✍️ Paste extra text / notes (optional)", height=100)
 
     if uploaded_pdf is None and uploaded_img is None and not user_text.strip():
@@ -226,17 +209,12 @@ if mode == "Single Document":
         img = Image.open(uploaded_img)
         st.image(img, caption="Uploaded image", use_container_width=True)
 
-        # Always convert to PNG bytes (fixes MIME mismatch permanently)
-        img = Image.open(uploaded_img).convert("RGB")
+        # Always convert to PNG bytes (fixes MIME mismatch)
+        img_rgb = Image.open(uploaded_img).convert("RGB")
         buf = io.BytesIO()
-        img.save(buf, format="PNG")
+        img_rgb.save(buf, format="PNG")
         img_bytes = buf.getvalue()
         img_fmt = "png"
-        img_fmt = img_fmt.lower()
-        if img_fmt == "jpg":
-            img_fmt = "jpeg"
-        if img_fmt not in ("png", "jpeg", "webp"):
-            img_fmt = "png"
 
         with st.spinner("🔍 Reading image with Nova Lite (multimodal)..."):
             try:
@@ -268,33 +246,42 @@ if mode == "Single Document":
 
     full_text = "\n\n".join(full_text_parts)
 
-    # Auto RAG settings (cache per doc)
+    # Doc fingerprint
     doc_fp = hashlib.md5(full_text[:20000].encode("utf-8", errors="ignore")).hexdigest()
 
+    # Auto RAG settings (cached per doc)
     if st.session_state.get("last_doc_fp") != doc_fp:
         st.session_state["last_doc_fp"] = doc_fp
         with st.spinner("⚙️ Auto-tuning retrieval settings with Nova Lite..."):
             st.session_state["auto_rag_settings"] = recommend_rag_settings(full_text)
-        # reset suggestions cache per new doc
-        st.session_state["suggested_by_interest"] = {}
+        # reset suggestions when doc changes
+        if "suggested_questions" in st.session_state:
+            del st.session_state["suggested_questions"]
+        if "suggest_fp" in st.session_state:
+            del st.session_state["suggest_fp"]
 
     rec = st.session_state.get("auto_rag_settings", {"chunk_size": 1000, "overlap": 150, "top_k": 4})
-    chunk_size, overlap, top_k = rec["chunk_size"], rec["overlap"], rec["top_k"]
+    auto_chunk_size, auto_overlap, auto_top_k = rec["chunk_size"], rec["overlap"], rec["top_k"]
 
-    st.subheader("⚙️ Auto-Optimized Retrieval Settings (Nova Lite)")
-    s1, s2, s3 = st.columns(3)
-    s1.metric("Auto chunk size", chunk_size)
-    s2.metric("Auto overlap", overlap)
-    s3.metric("Auto Top-K", top_k)
+    # Sidebar: retrieval settings (AUTO + optional manual adjust)
+    st.sidebar.subheader("🔎 Retrieval settings")
+    use_auto = st.sidebar.toggle("Use Nova auto-optimized settings", value=True)
+
+    if use_auto:
+        chunk_size, overlap, top_k = auto_chunk_size, auto_overlap, auto_top_k
+        st.sidebar.caption(f"Auto: chunk={chunk_size}, overlap={overlap}, top_k={top_k}")
+    else:
+        chunk_size = st.sidebar.slider("Chunk size (chars)", 300, 2000, int(auto_chunk_size), 50)
+        overlap = st.sidebar.slider("Overlap (chars)", 0, 400, int(auto_overlap), 25)
+        top_k = st.sidebar.slider("Top-K sources", 2, 8, int(auto_top_k), 1)
 
     chunks = chunk_text(full_text, chunk_size=chunk_size, overlap=overlap)
 
-    # Metrics
-    c1, c2, c3, c4 = st.columns(4)
+    # Metrics (keep clean, no retrieval settings panel here)
+    c1, c2, c3 = st.columns(3)
     c1.metric("Chunks", len(chunks))
     c2.metric("Top-K", top_k)
-    c3.metric("Chunk size", chunk_size)
-    c4.metric("Mode", "Single")
+    c3.metric("Mode", "Single")
 
     with st.expander("📄 Combined text preview", expanded=False):
         st.text_area("Preview", full_text[:8000], height=240)
@@ -312,9 +299,8 @@ if mode == "Single Document":
                 rag.add_chunks(chunks)
                 st.session_state.single_rag = rag
             st.success("Index ready ✅")
-
     with b:
-        st.info("Once indexed, you can ask questions. Answers are grounded with evidence + sources.")
+        st.info("Once indexed, you can ask questions. Answers include evidence + sources.")
 
     st.divider()
 
@@ -327,50 +313,39 @@ if mode == "Single Document":
         st.code(out, language="json")
 
     st.divider()
-    
+
+    # Suggested questions (dynamic per doc + interest)
     st.markdown("### ✨ Nova-suggested questions (auto from your document)")
-    # Regenerate suggestions when document OR interest changes
     suggest_fp = f"{doc_fp}:{user_interest}"
+
     if st.session_state.get("suggest_fp") != suggest_fp:
         st.session_state["suggest_fp"] = suggest_fp
         with st.spinner("Generating questions from your document..."):
-            st.session_state["suggested_questions"] = suggest_questions(
-                full_text,
-                user_interest=user_interest,
-                n=6
-            )
-    
+            st.session_state["suggested_questions"] = suggest_questions(full_text, user_interest=user_interest, n=6)
+
     qs = st.session_state.get("suggested_questions", [])
-    
-    # If model returned empty list, show a warning (no fixed fallback here)
-    if not qs:
-        st.warning("Nova couldn’t generate suggestions for this document. Try uploading a richer document.")
-    else:
+    if qs:
         cols = st.columns(3)
         for i, q in enumerate(qs):
             with cols[i % 3]:
                 if st.button(q, use_container_width=True, key=f"dynq_{i}"):
-                    st.session_state["typed_q_input"] = q
                     st.session_state["pending_question"] = q
                     st.rerun()
-    
-    # Optional: refresh suggestions button (always new set)
+    else:
+        st.warning("Nova couldn’t generate suggestions for this document. Try uploading a richer document.")
+
     if st.button("🔄 Refresh questions", use_container_width=True):
         with st.spinner("Refreshing questions from your document..."):
-            st.session_state["suggested_questions"] = suggest_questions(
-                full_text,
-                user_interest=user_interest,
-                n=6
-            )
+            st.session_state["suggested_questions"] = suggest_questions(full_text, user_interest=user_interest, n=6)
         st.rerun()
 
+    st.divider()
 
     # -------------------------------
-    # Chat
+    # Chat (input stays HERE, not bottom)
     # -------------------------------
     st.subheader("3) Chat with your document")
 
-    # Guard: index must exist
     index_ready = isinstance(st.session_state.get("single_rag", None), RagIndex)
     if not index_ready:
         st.warning("Build the index first to enable chat.")
@@ -380,72 +355,69 @@ if mode == "Single Document":
         st.warning("Not enough text to chat. Upload a PDF or text-heavy image.")
         st.stop()
 
-    # Render chat history
+    # Render history
     for msg in st.session_state.chat:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Ask UI (in-section, not bottom)
+    # ---- Ask box (FORM) so it stays in section 3 and clears safely
     st.markdown("#### 💬 Ask a question")
 
-    # If user clicked a suggested question, ask it immediately (no input clearing needed)
+    # If suggestion clicked
     if "pending_question" in st.session_state:
-        user_q = st.session_state.pop("pending_question")
+        q_to_ask = st.session_state.pop("pending_question")
     else:
-        user_q = st.chat_input("Ask something about the document…")
-    
-    if user_q:
-        user_q = user_q.strip()
-        if not user_q:
-            st.stop()
-    
-        rag = st.session_state.get("single_rag", None)
-        if not isinstance(rag, RagIndex):
-            st.error("Index not ready. Click **Build Index** first.")
-            st.stop()
-    
-        # show user message
+        q_to_ask = None
+
+    with st.form(key=f"ask_form_{st.session_state['q_key']}", clear_on_submit=True):
+        q = st.text_input(
+            "Type your question",
+            value=q_to_ask or "",
+            placeholder="e.g., What are the key results and what do they imply?",
+            label_visibility="collapsed",
+        )
+        ask_clicked = st.form_submit_button("Ask", use_container_width=True)
+
+    if ask_clicked and q.strip():
+        user_q = q.strip()
+        rag = st.session_state.single_rag
+
         st.session_state.chat.append({"role": "user", "content": user_q})
         with st.chat_message("user"):
             st.markdown(user_q)
-    
-        # retrieve
+
         with st.spinner("Retrieving sources..."):
             hits, scores = rag.search(user_q, k=top_k)
             ctx = [h.text for h in hits]
-            avg_score = (sum(scores) / len(scores)) if scores else 0.0
-    
-        # answer
+
         with st.spinner("Thinking with Nova Lite..."):
             start_time = time.time()
             ans = ask_with_evidence(user_q, ctx)
             response_time = round(time.time() - start_time, 2)
-    
+
         answer_text = ans.get("answer", "").strip()
         evidence_text = ans.get("evidence", "").strip()
-    
+
         with st.chat_message("assistant"):
-            # (keep your badge UI here if you want)
             st.markdown(answer_text if answer_text else "I don't know based on the document.")
-    
+
             if evidence_text:
                 with st.expander("📌 Evidence (exact quotes)"):
                     st.markdown(evidence_text)
-    
+
             st.markdown("**Retrieved sources**")
             for i, (h, s) in enumerate(zip(hits, scores), start=1):
                 with st.expander(f"Source {i} • score {s:.3f} • chunk #{h.chunk_id}"):
                     st.write(h.text[:2000])
-    
+
             st.markdown("---")
             st.caption(f"⏱ Average response time: {response_time} sec")
-    
+
         st.session_state.chat.append({"role": "assistant", "content": answer_text})
         st.session_state.qa_log.append({"question": user_q, "answer": answer_text, "evidence": evidence_text})
 
-
-        # clear input after ask
-        st.session_state["typed_q_input"] = ""
+        # rotate form key so the input always appears cleared
+        st.session_state["q_key"] += 1
         st.rerun()
 
     st.divider()
@@ -468,7 +440,7 @@ if mode == "Single Document":
         sections = [
             ("Report title (generated)", report_title),
             ("Document type (auto)", auto_type),
-            ("Auto retrieval settings", f"chunk_size={chunk_size}, overlap={overlap}, top_k={top_k}"),
+            ("Retrieval settings", f"chunk_size={chunk_size}, overlap={overlap}, top_k={top_k}"),
             ("Combined text preview (first 1200 chars)", full_text[:1200]),
             ("Recent Q&A (up to last 10)", qa_text or "No Q&A yet."),
         ]
@@ -485,7 +457,6 @@ if mode == "Single Document":
             mime="application/pdf",
             use_container_width=True
         )
-
 
 # =======================
 # Mode: Compare Two Docs
@@ -507,10 +478,20 @@ else:
     text_a = extract_text_from_pdf(up_a)
     text_b = extract_text_from_pdf(up_b)
 
-    # Auto tuning for compare mode
     with st.spinner("⚙️ Auto-tuning retrieval settings for comparison..."):
         rec = recommend_rag_settings(text_a + "\n\n" + text_b)
+
     chunk_size, overlap, top_k = rec["chunk_size"], rec["overlap"], rec["top_k"]
+
+    # Sidebar adjustment toggle
+    st.sidebar.subheader("🔎 Retrieval settings")
+    use_auto = st.sidebar.toggle("Use Nova auto-optimized settings", value=True, key="use_auto_compare")
+    if not use_auto:
+        chunk_size = st.sidebar.slider("Chunk size (chars)", 300, 2000, int(chunk_size), 50, key="cs_compare")
+        overlap = st.sidebar.slider("Overlap (chars)", 0, 400, int(overlap), 25, key="ov_compare")
+        top_k = st.sidebar.slider("Top-K sources", 2, 8, int(top_k), 1, key="tk_compare")
+    else:
+        st.sidebar.caption(f"Auto: chunk={chunk_size}, overlap={overlap}, top_k={top_k}")
 
     chunks_a = chunk_text(text_a, chunk_size=chunk_size, overlap=overlap)
     chunks_b = chunk_text(text_b, chunk_size=chunk_size, overlap=overlap)
@@ -518,7 +499,7 @@ else:
     m1, m2, m3 = st.columns(3)
     m1.metric("Doc A chunks", len(chunks_a))
     m2.metric("Doc B chunks", len(chunks_b))
-    m3.metric("Auto Top-K", top_k)
+    m3.metric("Top-K", top_k)
 
     if "rag_a" not in st.session_state:
         st.session_state.rag_a = None
@@ -564,12 +545,3 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
-
-
-
-
-
-
-
-
-
