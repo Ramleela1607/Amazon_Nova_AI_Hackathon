@@ -218,39 +218,34 @@ if mode == "Single Document":
     if uploaded_img is not None:
         img = Image.open(uploaded_img)
         st.image(img, caption="Uploaded image", use_container_width=True)
-
+    
+        # ✅ ADD THIS HERE (normalize to PNG bytes so Bedrock detects correct MIME)
         img_rgb = Image.open(uploaded_img).convert("RGB")
         buf = io.BytesIO()
         img_rgb.save(buf, format="PNG")
         img_bytes = buf.getvalue()
-        img_fmt = "png"
+        img_fmt = "png"  # always png after conversion
+    
+        # Use Nova multimodal (internal retrieval text + brief insights)
+        with st.spinner("🔍 Reading image with Nova Lite..."):
+            ocr_text = nova_image_to_text(img_bytes, image_format=img_fmt)
+    
+        with st.spinner("💡 Generating image insights..."):
+            insights = nova_image_insights_brief(img_bytes, image_format=img_fmt)
+    
+        # ✅ IMPORTANT (per your requirement):
+        # - Do NOT display extracted image text
+        # - Only display the 2-line insights
+        if insights.strip():
+            st.subheader("🖼️ Image Insights")
+            st.markdown(insights)
+    
+        # Include BOTH into retrieval text (even though OCR is not displayed)
+        if ocr_text.strip():
+            full_text_parts.append("=== IMAGE TEXT (NOVA) ===\n" + ocr_text)
+        if insights.strip():
+            full_text_parts.append("=== IMAGE INSIGHTS (NOVA) ===\n" + insights)
 
-        with st.spinner("🔍 Understanding image with Nova Lite (multimodal)..."):
-            try:
-                image_ocr_text = nova_image_to_text(img_bytes, image_format=img_fmt)
-            except Exception as e:
-                image_ocr_text = ""
-                st.error(f"Image reading failed: {e}")
-
-        with st.spinner("💡 Creating brief image insight..."):
-            try:
-                image_brief_insights = nova_image_insights_brief(img_bytes, image_format=img_fmt)
-            except Exception as e:
-                image_brief_insights = ""
-                st.error(f"Image insights failed: {e}")
-
-        # ✅ UI: show only the brief format you asked
-        if image_brief_insights.strip():
-            with st.expander("✨ Image insights", expanded=True):
-                st.markdown(image_brief_insights)
-
-        # ✅ Internal: add OCR text for retrieval (but not shown)
-        if image_ocr_text.strip():
-            full_text_parts.append("=== IMAGE TEXT (INTERNAL OCR) ===\n" + image_ocr_text)
-
-        # ✅ Internal: also add the brief insight as searchable context
-        if image_brief_insights.strip():
-            full_text_parts.append("=== IMAGE INSIGHTS (BRIEF) ===\n" + image_brief_insights)
 
     # Notes
     if user_text.strip():
@@ -491,3 +486,4 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
