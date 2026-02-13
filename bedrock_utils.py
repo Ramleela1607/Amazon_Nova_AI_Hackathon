@@ -459,7 +459,30 @@ Content excerpt:
 def suggest_questions(doc_text: str, user_interest: str = "General", n: int = 6) -> List[str]:
     brt = get_bedrock_runtime(GEN_REGION)
 
-    prompt = f"""
+    doc_excerpt = (doc_text or "")[:9000]
+
+    def _call_model(strict: bool) -> str:
+        if strict:
+            prompt = f"""
+You are a smart document copilot.
+
+Return ONLY a valid JSON array of {n} strings.
+No markdown. No code fences. No explanation.
+
+Rules:
+- Each question <= 12 words.
+- Make questions specific to this document.
+- Mix: summary, key numbers, risks, actions, missing info check.
+- Personalized for role: {user_interest}
+
+EXAMPLE OUTPUT:
+["What is the document about?","What key numbers are mentioned?"]
+
+Document excerpt:
+{doc_excerpt}
+""".strip()
+        else:
+            prompt = f"""
 You are a smart document copilot.
 
 Generate {n} useful questions a user might ask about this document,
@@ -473,28 +496,125 @@ Rules:
 - Mix: summary, key numbers, risks, actions, and one "missing info" check.
 
 Document excerpt:
-{doc_text[:9000]}
+{doc_excerpt}
 """.strip()
 
-    resp = brt.converse(
-        modelId=NOVA_LITE_MODEL_ID,
-        messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": 260, "temperature": 0.3, "topP": 0.9},
-    )
+        resp = brt.converse(
+            modelId=NOVA_LITE_MODEL_ID,
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
+            inferenceConfig={"maxTokens": 320, "temperature": 0.3, "topP": 0.9},
+        )
+        return resp["output"]["message"]["content"][0]["text"].strip()
 
-    txt = resp["output"]["message"]["content"][0]["text"].strip()
+    def _parse_questions(txt: str) -> List[str]:
+        txt = _strip_code_fences(txt)
 
+        # Normalize smart quotes → ASCII quotes
+        txt = txt.replace("“", '"').replace("”", '"').replace("’", "'")
+
+        # Extract the first JSON array from the text
+        arr_txt = _extract_json_array(txt)
+
+        # Remove trailing commas inside arrays (common model slip)
+        arr_txt = re.sub(r",\s*([\]\}])", r"\1", arr_txt)
+
+        arr = json.loads(arr_txt)
+        if not isinstance(arr, list):
+            return []
+
+        out: List[str] = []
+        for q in arr:
+            if isinstance(q, str):
+                q = q.strip()
+                if not q:
+                    continue
+                # enforce <= 12 words softly
+                words = q.split()
+                if len(words) > 12:
+                    q = " ".join(words[:12])
+                out.append(q)
+
+        # de-dup while preserving order
+        dedup = []
+        seen = set()
+        for q in out:
+            if q.lower() not in seen:
+                dedup.append(q)
+                seen.add(q.lower())
+
+        return dedup[:n]
+
+    # --- Attempt 1 (normal) ---
     try:
-        arr = json.loads(txt)
-        if isinstance(arr, list):
-            out = []
-            for q in arr:
-                if isinstance(q, str) and q.strip():
-                    out.append(q.strip())
-            return out[:n]
+        txt = _call_model(strict=False)
+        qs = _parse_questions(txt)
+        if qs:
+            return qs
     except Exception:
         pass
 
-    return []
+    # --- Attempt 2 (stricter) ---
+    try:
+        txt = _call_model(strict=True)
+        qs = _parse_questions(txt)
+        if qs:
+            return qs
+    except Exception:
+        pass
 
+    # --- Final fallback: always return something doc-aware ---
+    # try to grab a few "entities" from text to make questions feel specific
+    entities = re.findall(r"\b[A-Z][a-zA-Z]{2,}(?:\s+[A-Z][a-zA-Z]{2,}){0,2}\b", doc_excerpt)
+    entities = [e.strip() for e in entities if e.strip()]
+    entities = list(dict.fromkeys(entities))[:3]  # unique, max 3
 
+    hint = f" ({entities[0]})" if entities else ""
+    role = (user_interest or "General").lower()
+
+    if "finance" in role:
+        fallback = [
+            f"What total amounts or fees appear{hint}?",
+            "What payment terms or due dates are stated?",
+            "Any missing invoice fields or inconsistencies?",
+            "What risks exist in payment details?",
+            "What actions should finance take next?",
+            "What numbers should be verified immediately?",
+        ]
+    elif "legal" in role:
+        fallback = [
+            f"What obligations are stated{hint}?",
+            "Any deadlines, term dates, or notices mentioned?",
+            "What risks or liabilities are implied?",
+            "What clauses look missing or unclear?",
+            "What should be reviewed before signing?",
+            "What follow-up questions should we ask?",
+        ]
+    elif "hr" in role or "recruit" in role:
+        fallback = [
+            f"What is the candidate/profile summary{hint}?",
+            "What key skills and experience are mentioned?",
+            "Any gaps, inconsistencies, or missing info?",
+            "What role fit is implied and why?",
+            "What questions should we ask next?",
+            "What dates/timelines should we verify?",
+        ]
+    elif "research" in role or "student" in role:
+        fallback = [
+            f"What is the main objective{hint}?",
+            "What methodology or approach is described?",
+            "What key results or metrics are reported?",
+            "What limitations or assumptions are stated?",
+            "What future work or next steps are suggested?",
+            "What important details seem missing?",
+        ]
+    else:
+        fallback = [
+            f"What is this document about{hint}?",
+            "What are the key points or sections?",
+            "What key numbers, dates, or IDs appear?",
+            "What risks, issues, or constraints are mentioned?",
+            "What actions or next steps are recommended?",
+            "What important information is missing?",
+        ]
+
+    return fallback[:n]
