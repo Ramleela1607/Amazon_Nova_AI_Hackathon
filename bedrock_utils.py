@@ -69,6 +69,15 @@ def embed_text(text: str, dim: int = 1024) -> List[float]:
         raise ValueError(f"Could not find embedding vector in response keys: {list(out.keys())}")
     return vec
 
+def _img_block(image_bytes: bytes, image_format: str) -> Dict[str, Any]:
+    fmt = (image_format or "png").lower()
+    if fmt == "jpg":
+        fmt = "jpeg"
+    if fmt not in ("png", "jpeg", "webp"):
+        fmt = "png"
+
+    # IMPORTANT: pass RAW bytes; boto3 handles encoding internally
+    return {"image": {"format": fmt, "source": {"bytes": image_bytes}}}
 
 # -------------------------
 # Multimodal (Image -> Text / Insights) using Nova Lite
@@ -438,4 +447,5 @@ Document excerpt:
         "What information is missing or unclear?",
         "What is the main purpose here?",
     ][:n]
+
 
