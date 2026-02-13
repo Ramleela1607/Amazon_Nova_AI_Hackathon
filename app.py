@@ -2,9 +2,11 @@ import time
 import streamlit as st
 from pypdf import PdfReader
 from PIL import Image
+
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
+
 from rag_index import RagIndex
 from bedrock_utils import (
     ask_with_evidence,
@@ -20,7 +22,6 @@ st.set_page_config(page_title="Smart Document Copilot", layout="wide")
 # ---------- Premium UI (light background image) ----------
 st.markdown("""
 <style>
-/* ---------- Light theme + background image ---------- */
 .stApp {
   background-image:
     url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='1200' height='800'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop stop-color='%23e0f2fe' offset='0'/><stop stop-color='%23fce7f3' offset='0.5'/><stop stop-color='%23ecfccb' offset='1'/></linearGradient></defs><rect width='1200' height='800' fill='url(%23g)'/><path d='M0,520 C220,460 420,610 650,540 C880,470 1020,570 1200,520 L1200,800 L0,800 Z' fill='%23ffffff' fill-opacity='0.55'/><path d='M0,600 C260,540 430,700 700,620 C940,550 1040,660 1200,610' stroke='%2399f6e4' stroke-width='18' stroke-opacity='0.35' fill='none'/><path d='M0,650 C280,590 470,740 760,660 C980,600 1090,700 1200,660' stroke='%23a5b4fc' stroke-width='14' stroke-opacity='0.30' fill='none'/></svg>");
@@ -28,7 +29,6 @@ st.markdown("""
   background-attachment: fixed;
   color: #111827 !important;
 }
-
 html, body, [class*="css"]  { color: #111827 !important; }
 
 section[data-testid="stSidebar"]{
@@ -47,14 +47,12 @@ div[data-testid="stMetric"] {
   border-radius: 16px;
   box-shadow: 0 8px 22px rgba(17,24,39,0.07);
 }
-
 div[data-testid="stExpander"] {
   border-radius: 16px;
   border: 1px solid rgba(17,24,39,0.10);
   background: rgba(255,255,255,0.78);
   box-shadow: 0 8px 22px rgba(17,24,39,0.06);
 }
-
 .stButton button {
   border-radius: 14px;
   border: 1px solid rgba(17,24,39,0.12);
@@ -66,14 +64,12 @@ div[data-testid="stExpander"] {
   border: 1px solid rgba(99,102,241,0.45);
   box-shadow: 0 8px 20px rgba(99,102,241,0.18);
 }
-
 div[data-baseweb="input"] input, textarea {
   background: rgba(255,255,255,0.88) !important;
   color: #111827 !important;
   border-radius: 12px !important;
   border: 1px solid rgba(17,24,39,0.14) !important;
 }
-
 div[data-testid="stChatMessage"]{
   background: rgba(255,255,255,0.80);
   border: 1px solid rgba(17,24,39,0.10);
@@ -81,7 +77,6 @@ div[data-testid="stChatMessage"]{
   box-shadow: 0 8px 18px rgba(17,24,39,0.05);
 }
 div[data-testid="stChatMessage"] *{ color: #111827 !important; }
-
 a { color: #1d4ed8 !important; }
 </style>
 """, unsafe_allow_html=True)
@@ -102,7 +97,6 @@ def extract_text_from_pdf(file) -> str:
         texts.append(f"\n\n--- Page {i+1} ---\n{page_text}")
     return "".join(texts)
 
-
 def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150):
     chunks = []
     start = 0
@@ -113,7 +107,6 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150):
             chunks.append(chunk)
         start += chunk_size - overlap
     return chunks
-
 
 def make_pdf_report(filename: str, title: str, sections: list[tuple[str, str]]) -> bytes:
     styles = getSampleStyleSheet()
@@ -135,7 +128,6 @@ def make_pdf_report(filename: str, title: str, sections: list[tuple[str, str]]) 
     with open(path, "rb") as f:
         return f.read()
 
-
 def reset_session():
     for k in list(st.session_state.keys()):
         del st.session_state[k]
@@ -150,7 +142,7 @@ overlap = st.sidebar.slider("Overlap (chars)", 0, 400, 150, 25)
 top_k = st.sidebar.slider("Top-K sources", 2, 8, 4, 1)
 
 st.sidebar.markdown("---")
-st.sidebar.caption("✅ Demo tips:\n- Upload PDF OR Image\n- Ask: 'What text is in the image?'\n- Show Evidence + Sources\n- Download PDF report")
+st.sidebar.caption("✅ Demo tips:\n- Upload PDF or Image + paste image text\n- Ask: 'What does the image say?'\n- Show Evidence + Sources\n- Download PDF report")
 
 # ---------- Session init ----------
 if "chat" not in st.session_state:
@@ -166,24 +158,24 @@ if mode == "Single Document":
     uploaded_img = st.file_uploader("🖼️ Upload an Image (optional)", type=["png", "jpg", "jpeg"])
     user_text = st.text_area("✍️ Paste extra text / notes (optional)", height=120, placeholder="Paste any text you want the bot to use...")
 
+    image_manual_text = ""
+    full_text_parts = []
+
     if uploaded_pdf is None and uploaded_img is None and not user_text.strip():
         st.info("Upload a PDF or Image or paste text → Build Index → Start chatting.")
         st.stop()
-
-    full_text_parts = []
 
     # PDF → text
     if uploaded_pdf is not None:
         pdf_text = extract_text_from_pdf(uploaded_pdf)
         full_text_parts.append("=== PDF TEXT ===\n" + pdf_text)
 
-    # Image → show + manual text input (Textract blocked in your account)
-    image_manual_text = ""
+    # Image → show + manual text input
     if uploaded_img is not None:
         img = Image.open(uploaded_img)
         st.image(img, caption="Uploaded image", use_container_width=True)
 
-        st.info("Textract OCR is blocked in this account. Paste the text from the image below (demo-friendly).")
+        st.info("Paste the text from the image below so it becomes searchable (OCR service blocked).")
         image_manual_text = st.text_area(
             "🧾 Image text (paste here)",
             height=120,
@@ -193,7 +185,11 @@ if mode == "Single Document":
         if image_manual_text.strip():
             full_text_parts.append("=== IMAGE TEXT (MANUAL) ===\n" + image_manual_text.strip())
         else:
-            full_text_parts.append(f"=== IMAGE UPLOADED ===\nFilename: {uploaded_img.name}\n(No text provided)")
+            full_text_parts.append(
+                "=== IMAGE UPLOADED ===\n"
+                f"Filename: {uploaded_img.name}\n"
+                "NOTE: No text provided. The assistant cannot answer questions about the image content unless you paste the text."
+            )
 
     # User notes
     if user_text.strip():
@@ -201,6 +197,16 @@ if mode == "Single Document":
 
     full_text = "\n\n".join(full_text_parts)
     chunks = chunk_text(full_text, chunk_size=chunk_size, overlap=overlap)
+
+    # Helpful warning if image-only with no text
+    only_image_no_text = (
+        uploaded_img is not None
+        and uploaded_pdf is None
+        and not user_text.strip()
+        and not image_manual_text.strip()
+    )
+    if only_image_no_text:
+        st.warning("You uploaded an image but did not paste its text. Paste text in '🧾 Image text' for Q&A to work well.")
 
     # Metrics
     c1, c2, c3, c4 = st.columns(4)
@@ -224,7 +230,6 @@ if mode == "Single Document":
                 rag.add_chunks(chunks)
                 st.session_state.single_rag = rag
             st.success("Index ready ✅")
-
     with b:
         st.info("Chat below. Evidence + sources included. Response time appears at bottom.")
 
@@ -248,12 +253,18 @@ if mode == "Single Document":
         st.warning("Build the index first to enable chat.")
         st.stop()
 
+    if len(full_text.strip()) < 50:
+        st.warning("Not enough text to chat. Upload a PDF or paste text (including image text).")
+        st.stop()
+
     # Top actions
-    topA, topB, topC = st.columns([1, 1, 2])
+    topA, topB = st.columns([1, 3])
     if topA.button("🧹 Clear chat", use_container_width=True):
         st.session_state.chat = []
         st.session_state.qa_log = []
         st.rerun()
+    with topB:
+        st.caption("Tip: Ask directly about pasted image text or PDF content.")
 
     # Suggested questions
     st.markdown("### ✨ Suggested questions")
@@ -262,7 +273,7 @@ if mode == "Single Document":
         "Summarize the content in 3 bullet points.",
         "What are the key numbers or metrics mentioned?",
         "What are the main risks/limitations?",
-        "What are recommended next steps or actions?"
+        "What are recommended next steps or actions?",
     ]
     clicked = None
     if sq1.button("🧠 Summary", use_container_width=True): clicked = suggestions[0]
@@ -280,7 +291,6 @@ if mode == "Single Document":
 
     default_q = st.session_state.pop("_prefill_q", "")
     user_q = st.chat_input("Ask something… (try: What does the image say?)")
-
     if default_q:
         user_q = default_q
 
@@ -305,7 +315,6 @@ if mode == "Single Document":
         evidence_text = ans.get("evidence", "")
 
         with st.chat_message("assistant"):
-            # Grounding badge
             badge1, badge2 = st.columns([1, 3])
             with badge1:
                 if avg_score >= 0.25:
@@ -424,5 +433,3 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
-
-
