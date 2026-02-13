@@ -225,7 +225,12 @@ if mode == "Single Document":
         st.image(img, caption="Uploaded image", use_container_width=True)
 
         img_bytes = uploaded_img.getvalue()
-        img_fmt = uploaded_img.name.split(".")[-1].lower() if "." in uploaded_img.name else "png"
+        img_fmt = uploaded_img.type.split("/")[-1] if uploaded_img.type else "png"
+        img_fmt = img_fmt.lower()
+        if img_fmt == "jpg":
+            img_fmt = "jpeg"
+        if img_fmt not in ("png", "jpeg", "webp"):
+            img_fmt = "png"
 
         with st.spinner("🔍 Reading image with Nova Lite (multimodal)..."):
             try:
@@ -570,3 +575,4 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
