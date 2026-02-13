@@ -296,13 +296,7 @@ if mode == "Single Document":
         st.stop()
 
     # Clear chat
-    cc1, cc2 = st.columns([1, 3])
-    if cc1.button("🧹 Clear chat", use_container_width=True):
-        st.session_state.chat = []
-        st.session_state.qa_log = []
-        st.rerun()
-    with cc2:
-        st.caption("Tip: Ask about extracted image text, image insights, or PDF content.")
+    st.caption("Tip: Ask about extracted image text, image insights, or PDF content.")
 
     # Suggested questions
     st.markdown("### ✨ Suggested questions")
@@ -492,6 +486,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
