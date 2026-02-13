@@ -545,5 +545,72 @@ Document excerpt:
 
     return cleaned
 
+# -------------------------
+# Nova Executive Dashboard Insights
+# -------------------------
+def generate_dashboard_insights(doc_text: str) -> dict:
+    """
+    Generate structured executive dashboard insights.
+    Returns JSON with summary, key_numbers, key_dates, risks, next_actions.
+    """
+
+    brt = get_bedrock_runtime(GEN_REGION)
+
+    excerpt = (doc_text or "")[:12000]
+
+    prompt = f"""
+You are an executive document analyst.
+
+Analyze the document and return ONLY valid JSON in this format:
+
+{{
+  "summary": "2-3 sentence executive summary",
+  "key_numbers": [
+    {{"label": "Metric name", "value": "value"}}
+  ],
+  "key_dates": [
+    {{"label": "Date description", "value": "date"}}
+  ],
+  "risks": [
+    "short risk statement"
+  ],
+  "next_actions": [
+    "clear practical action"
+  ]
+}}
+
+Rules:
+- Be factual.
+- Extract real values only (do NOT invent).
+- Keep lists concise (max 5 each).
+- If none found, return empty list [].
+- Return ONLY JSON. No commentary.
+
+Document:
+{excerpt}
+""".strip()
+
+    resp = brt.converse(
+        modelId=NOVA_LITE_MODEL_ID,
+        messages=[{"role": "user", "content": [{"text": prompt}]}],
+        inferenceConfig={"maxTokens": 600, "temperature": 0.2, "topP": 0.9},
+    )
+
+    txt = resp["output"]["message"]["content"][0]["text"].strip()
+
+    # Try parsing safely
+    try:
+        data = json.loads(txt)
+        return data
+    except Exception:
+        # Fallback structure
+        return {
+            "summary": "",
+            "key_numbers": [],
+            "key_dates": [],
+            "risks": [],
+            "next_actions": [],
+        }
+
 
 
