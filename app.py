@@ -392,13 +392,20 @@ if mode == "Single Document":
 # =======================
 else:
     st.subheader("🆚 Compare Two PDFs")
-
+    k = st.session_state.get("uploader_key", 0)
     c1, c2 = st.columns(2)
     with c1:
-        up_a = st.file_uploader("Upload PDF (Doc A)", type=["pdf"], key="docA")
+        up_a = st.file_uploader(
+            "Upload PDF (Doc A)",
+            type=["pdf"],
+            key=f"docA_{k}"
+        )
     with c2:
-        up_b = st.file_uploader("Upload PDF (Doc B)", type=["pdf"], key="docB")
-
+        up_b = st.file_uploader(
+            "Upload PDF (Doc B)",
+            type=["pdf"],
+            key=f"docB_{k}"
+        )
     if up_a is None or up_b is None:
         st.info("Upload both PDFs → Build indexes → Ask a comparison question.")
         st.stop()
@@ -458,4 +465,5 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
