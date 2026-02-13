@@ -314,18 +314,22 @@ if mode == "Single Document":
     
     # 2) Run the question EXACTLY ONCE
     if "pending_question" in st.session_state:
-        user_q = st.session_state.pop("pending_question")  # <-- pop consumes it (prevents repeats)
+        user_q = st.session_state.pop("pending_question")
     
-        # User bubble
+        rag = st.session_state.get("single_rag", None)
+        if not isinstance(rag, RagIndex):
+            st.error("Index not ready. Click **Build Index** first.")
+            st.stop()
+    
         st.session_state.chat.append({"role": "user", "content": user_q})
         with st.chat_message("user"):
             st.markdown(user_q)
     
-        # Retrieve
-        with st.spinner("Retrieving sources..."):
-            hits, scores = st.session_state.single_rag.search(user_q, k=top_k)
+        with st.spinner("Retrieving sources & thinking with Nova Lite..."):
+            hits, scores = rag.search(user_q, k=top_k)
             ctx = [h.text for h in hits]
             avg_score = (sum(scores) / len(scores)) if scores else 0.0
+
     
         # Answer
         with st.spinner("Thinking with Nova Lite..."):
@@ -571,6 +575,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
