@@ -319,6 +319,59 @@ if mode == "Single Document":
         full_text_parts.append("=== USER NOTES ===\n" + user_text.strip())
 
     full_text = "\n\n".join(full_text_parts)
+    # ========================
+    # 📊 Executive Dashboard
+    # ========================
+    
+    st.subheader("📊 Executive Dashboard")
+    
+    dash_fp = f"dashboard:{hashlib.md5(full_text[:20000].encode()).hexdigest()}"
+    
+    if dash_fp not in st.session_state:
+        with st.spinner("Analyzing document for executive insights..."):
+            st.session_state[dash_fp] = generate_dashboard_insights(full_text)
+    
+    dashboard = st.session_state.get(dash_fp, {})
+    
+    summary = dashboard.get("summary", "")
+    key_numbers = dashboard.get("key_numbers", [])
+    key_dates = dashboard.get("key_dates", [])
+    risks = dashboard.get("risks", [])
+    next_actions = dashboard.get("next_actions", [])
+    
+    # 🔹 Summary
+    if summary:
+        st.markdown("### 🧾 Executive Summary")
+        st.markdown(summary)
+    
+    # 🔹 KPI Cards
+    if key_numbers or key_dates:
+        st.markdown("### 📌 Key Highlights")
+        cols = st.columns(3)
+    
+        idx = 0
+        for item in key_numbers[:3]:
+            cols[idx % 3].metric(item.get("label", "Metric"), item.get("value", "-"))
+            idx += 1
+    
+        for item in key_dates[:3]:
+            cols[idx % 3].metric(item.get("label", "Date"), item.get("value", "-"))
+            idx += 1
+    
+    # 🔹 Risks
+    if risks:
+        st.markdown("### ⚠️ Risks Identified")
+        for r in risks:
+            st.markdown(f"- {r}")
+    
+    # 🔹 Next Actions
+    if next_actions:
+        st.markdown("### ✅ Recommended Next Actions")
+        for a in next_actions:
+            st.markdown(f"- {a}")
+    
+    st.divider()
+
     doc_fp = hashlib.md5(full_text[:20000].encode("utf-8", errors="ignore")).hexdigest()
 
     # Auto settings per doc
@@ -520,4 +573,5 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
