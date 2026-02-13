@@ -344,7 +344,10 @@ if mode == "Single Document":
         with st.chat_message("assistant"):
             b1, b2 = st.columns([1, 3])
             with b1:
-                st.success("✅ Grounded") if avg_score >= 0.25 else st.warning("⚠️ Low confidence")
+                if avg_score >= 0.25:
+                    st.success("✅ Grounded")
+                else:
+                    st.warning("⚠️ Low confidence")
             with b2:
                 st.caption(f"Retrieval strength: {avg_score:.3f}")
     
@@ -575,6 +578,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
