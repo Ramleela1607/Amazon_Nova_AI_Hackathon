@@ -2,11 +2,9 @@ import time
 import streamlit as st
 from pypdf import PdfReader
 from PIL import Image
-
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
-
 from rag_index import RagIndex
 from bedrock_utils import (
     ask_with_evidence,
@@ -14,7 +12,6 @@ from bedrock_utils import (
     detect_doc_type,
     compare_docs,
     DOC_TYPES,
-    textract_image_to_text,
 )
 
 # ---------- Page ----------
@@ -427,4 +424,5 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
