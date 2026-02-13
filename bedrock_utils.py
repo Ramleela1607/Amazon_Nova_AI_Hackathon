@@ -459,162 +459,80 @@ Content excerpt:
 def suggest_questions(doc_text: str, user_interest: str = "General", n: int = 6) -> List[str]:
     brt = get_bedrock_runtime(GEN_REGION)
 
-    doc_excerpt = (doc_text or "")[:9000]
+    # Keep a decent amount of text; too short -> suggestions are weak/empty
+    excerpt = (doc_text or "").strip()
+    excerpt = excerpt[:12000] if len(excerpt) > 12000 else excerpt
 
-    def _call_model(strict: bool) -> str:
-        if strict:
-            prompt = f"""
-You are a smart document copilot.
-
-Return ONLY a valid JSON array of {n} strings.
-No markdown. No code fences. No explanation.
-
-Rules:
-- Each question <= 12 words.
-- Make questions specific to this document.
-- Mix: summary, key numbers, risks, actions, missing info check.
-- Personalized for role: {user_interest}
-
-EXAMPLE OUTPUT:
-["What is the document about?","What key numbers are mentioned?"]
-
-Document excerpt:
-{doc_excerpt}
-""".strip()
-        else:
-            prompt = f"""
+    prompt = f"""
 You are a smart document copilot.
 
 Generate {n} useful questions a user might ask about this document,
-personalized for the user's interest/role: {user_interest}
+personalized for the user's interest/role: {user_interest}.
 
-Rules:
-- Return ONLY valid JSON array of strings.
+IMPORTANT OUTPUT RULES:
+- Prefer returning ONLY a valid JSON array of strings.
+- If you cannot produce JSON, return one question per line (no bullets, no numbering).
 - Each question must be <= 12 words.
-- No numbering, no bullets.
 - Make questions specific to the document.
-- Mix: summary, key numbers, risks, actions, and one "missing info" check.
+- Mix: summary, key numbers, risks, actions, and one missing-info check.
 
 Document excerpt:
-{doc_excerpt}
+{excerpt}
 """.strip()
 
-        resp = brt.converse(
-            modelId=NOVA_LITE_MODEL_ID,
-            messages=[{"role": "user", "content": [{"text": prompt}]}],
-            inferenceConfig={"maxTokens": 320, "temperature": 0.3, "topP": 0.9},
-        )
-        return resp["output"]["message"]["content"][0]["text"].strip()
+    resp = brt.converse(
+        modelId=NOVA_LITE_MODEL_ID,
+        messages=[{"role": "user", "content": [{"text": prompt}]}],
+        inferenceConfig={"maxTokens": 320, "temperature": 0.3, "topP": 0.9},
+    )
 
-    def _parse_questions(txt: str) -> List[str]:
-        txt = _strip_code_fences(txt)
+    txt = (resp["output"]["message"]["content"][0]["text"] or "").strip()
 
-        # Normalize smart quotes → ASCII quotes
-        txt = txt.replace("“", '"').replace("”", '"').replace("’", "'")
-
-        # Extract the first JSON array from the text
-        arr_txt = _extract_json_array(txt)
-
-        # Remove trailing commas inside arrays (common model slip)
-        arr_txt = re.sub(r",\s*([\]\}])", r"\1", arr_txt)
-
-        arr = json.loads(arr_txt)
-        if not isinstance(arr, list):
-            return []
-
-        out: List[str] = []
-        for q in arr:
-            if isinstance(q, str):
-                q = q.strip()
-                if not q:
-                    continue
-                # enforce <= 12 words softly
-                words = q.split()
-                if len(words) > 12:
-                    q = " ".join(words[:12])
-                out.append(q)
-
-        # de-dup while preserving order
-        dedup = []
-        seen = set()
-        for q in out:
-            if q.lower() not in seen:
-                dedup.append(q)
-                seen.add(q.lower())
-
-        return dedup[:n]
-
-    # --- Attempt 1 (normal) ---
+    # 1) Try strict JSON
     try:
-        txt = _call_model(strict=False)
-        qs = _parse_questions(txt)
-        if qs:
-            return qs
+        arr = json.loads(txt)
+        if isinstance(arr, list):
+            out = [q.strip() for q in arr if isinstance(q, str) and q.strip()]
+            return out[:n]
     except Exception:
         pass
 
-    # --- Attempt 2 (stricter) ---
+    # 2) Try to extract a JSON array embedded in extra text
+    #    e.g. "Sure! Here you go: [ ... ]"
     try:
-        txt = _call_model(strict=True)
-        qs = _parse_questions(txt)
-        if qs:
-            return qs
+        start = txt.find("[")
+        end = txt.rfind("]")
+        if start != -1 and end != -1 and end > start:
+            candidate = txt[start : end + 1]
+            arr = json.loads(candidate)
+            if isinstance(arr, list):
+                out = [q.strip() for q in arr if isinstance(q, str) and q.strip()]
+                return out[:n]
     except Exception:
         pass
 
-    # --- Final fallback: always return something doc-aware ---
-    # try to grab a few "entities" from text to make questions feel specific
-    entities = re.findall(r"\b[A-Z][a-zA-Z]{2,}(?:\s+[A-Z][a-zA-Z]{2,}){0,2}\b", doc_excerpt)
-    entities = [e.strip() for e in entities if e.strip()]
-    entities = list(dict.fromkeys(entities))[:3]  # unique, max 3
+    # 3) Fallback: parse as lines (no JSON)
+    lines = []
+    for line in txt.splitlines():
+        line = line.strip().lstrip("-•").strip()
+        if not line:
+            continue
+        # remove accidental numbering like "1) " or "1. "
+        if len(line) > 2 and (line[0].isdigit() and line[1] in [")", "."]):
+            line = line[2:].strip()
+        if line:
+            lines.append(line)
 
-    hint = f" ({entities[0]})" if entities else ""
-    role = (user_interest or "General").lower()
+    # de-dup preserving order
+    seen = set()
+    out = []
+    for q in lines:
+        key = q.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(q)
+        if len(out) >= n:
+            break
 
-    if "finance" in role:
-        fallback = [
-            f"What total amounts or fees appear{hint}?",
-            "What payment terms or due dates are stated?",
-            "Any missing invoice fields or inconsistencies?",
-            "What risks exist in payment details?",
-            "What actions should finance take next?",
-            "What numbers should be verified immediately?",
-        ]
-    elif "legal" in role:
-        fallback = [
-            f"What obligations are stated{hint}?",
-            "Any deadlines, term dates, or notices mentioned?",
-            "What risks or liabilities are implied?",
-            "What clauses look missing or unclear?",
-            "What should be reviewed before signing?",
-            "What follow-up questions should we ask?",
-        ]
-    elif "hr" in role or "recruit" in role:
-        fallback = [
-            f"What is the candidate/profile summary{hint}?",
-            "What key skills and experience are mentioned?",
-            "Any gaps, inconsistencies, or missing info?",
-            "What role fit is implied and why?",
-            "What questions should we ask next?",
-            "What dates/timelines should we verify?",
-        ]
-    elif "research" in role or "student" in role:
-        fallback = [
-            f"What is the main objective{hint}?",
-            "What methodology or approach is described?",
-            "What key results or metrics are reported?",
-            "What limitations or assumptions are stated?",
-            "What future work or next steps are suggested?",
-            "What important details seem missing?",
-        ]
-    else:
-        fallback = [
-            f"What is this document about{hint}?",
-            "What are the key points or sections?",
-            "What key numbers, dates, or IDs appear?",
-            "What risks, issues, or constraints are mentioned?",
-            "What actions or next steps are recommended?",
-            "What important information is missing?",
-        ]
+    return out
 
-    return fallback[:n]
