@@ -62,6 +62,59 @@ def embed_text(text: str, dim: int = 1024) -> List[float]:
     return vec
 
 
+def recommend_rag_settings(doc_text: str) -> dict:
+    """
+    Returns auto RAG settings:
+      - chunk_size (chars)
+      - overlap (chars)
+      - top_k (sources)
+    Uses Nova Lite to choose based on length/structure of the document.
+    """
+    brt = get_bedrock_runtime(GEN_REGION)
+
+    prompt = f"""
+You are optimizing RAG settings for a document QA app.
+
+Choose values for:
+- chunk_size: integer 600 to 1600
+- overlap: integer 50 to 250
+- top_k: integer 3 to 6
+
+Heuristics:
+- Long/technical docs → chunk_size 1100-1500, overlap 150-220, top_k 4-6
+- Short docs → chunk_size 700-1000, overlap 80-150, top_k 3-4
+- Avoid too small chunks.
+- Keep overlap moderate.
+
+Return ONLY valid JSON like:
+{{"chunk_size": 1200, "overlap": 180, "top_k": 4}}
+
+Document excerpt:
+{doc_text[:8000]}
+"""
+    resp = brt.converse(
+        modelId=NOVA_LITE_MODEL_ID,
+        messages=[{"role": "user", "content": [{"text": prompt}]}],
+        inferenceConfig={"maxTokens": 80, "temperature": 0.2, "topP": 0.9},
+    )
+    txt = resp["output"]["message"]["content"][0]["text"].strip()
+
+    # Safe parse + fallback
+    try:
+        out = json.loads(txt)
+        chunk_size = int(out.get("chunk_size", 1000))
+        overlap = int(out.get("overlap", 150))
+        top_k = int(out.get("top_k", 4))
+    except Exception:
+        chunk_size, overlap, top_k = 1000, 150, 4
+
+    # Clamp to safe ranges
+    chunk_size = max(600, min(1600, chunk_size))
+    overlap = max(50, min(250, overlap))
+    top_k = max(3, min(6, top_k))
+
+    return {"chunk_size": chunk_size, "overlap": overlap, "top_k": top_k}
+
 # ---------------- Image -> Text / Insights (Nova Lite multimodal) ----------------
 
 def _normalize_img_format(fmt: str) -> str:
@@ -359,4 +412,5 @@ QUESTION:
         messages=[{"role": "user", "content": [{"text": prompt}]}],
     )
     return resp["output"]["message"]["content"][0]["text"]
+
 
