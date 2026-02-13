@@ -349,7 +349,7 @@ if mode == "Single Document":
         for i, q in enumerate(qs):
             with cols[i % 3]:
                 if st.button(q, use_container_width=True, key=f"dynq_{i}"):
-                    st.session_state["typed_q"] = q
+                    st.session_state["typed_q_input"] = q
                     st.session_state["pending_question"] = q
                     st.rerun()
     
@@ -475,7 +475,8 @@ if mode == "Single Document":
         st.session_state.qa_log.append({"question": user_q, "answer": answer_text, "evidence": evidence_text})
 
         # clear input after ask
-        st.session_state["typed_q"] = ""
+        st.session_state["typed_q_input"] = ""
+        st.rerun()
 
     st.divider()
 
@@ -593,6 +594,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
