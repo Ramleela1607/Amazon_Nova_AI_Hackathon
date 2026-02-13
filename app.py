@@ -1,7 +1,8 @@
+import io
 import time
 import streamlit as st
 from pypdf import PdfReader
-
+from PIL import Image
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
@@ -185,13 +186,35 @@ if "qa_log" not in st.session_state:
 # Mode: Single Document
 # =======================
 if mode == "Single Document":
-    uploaded = st.file_uploader("📤 Upload a PDF", type=["pdf"])
+    uploaded_pdf = st.file_uploader("📤 Upload a PDF (optional)", type=["pdf"])
+    uploaded_img = st.file_uploader("🖼️ Upload an Image (optional)", type=["png", "jpg", "jpeg"])
+    user_text = st.text_area("✍️ Paste text / notes (optional)", height=140, placeholder="Paste any text you want the bot to use...")
 
-    if uploaded is None:
-        st.info("Upload a PDF → Build Index → Start chatting. Use **Reset** anytime to start fresh.")
+    if uploaded_pdf is None and uploaded_img is None and not user_text.strip():
+        st.info("Upload a PDF or an Image or paste text → Build Index → Start chatting.")
         st.stop()
-
-    full_text = extract_text_from_pdf(uploaded)
+    
+    full_text_parts = []
+    
+    # PDF text
+    if uploaded_pdf is not None:
+        pdf_text = extract_text_from_pdf(uploaded_pdf)
+        full_text_parts.append("=== PDF TEXT ===\n" + pdf_text)
+    
+    # Image (we can't read text from image unless OCR is added)
+    if uploaded_img is not None:
+        img = Image.open(uploaded_img)
+        st.image(img, caption="Uploaded image", use_container_width=True)
+    
+        # We add a placeholder chunk so image presence is known
+        # (If you later add OCR/captioning, replace this)
+        full_text_parts.append(f"=== IMAGE UPLOADED ===\nFilename: {uploaded_img.name}\n")
+    
+    # User text
+    if user_text.strip():
+        full_text_parts.append("=== USER NOTES ===\n" + user_text.strip())
+    
+    full_text = "\n\n".join(full_text_parts)
     chunks = chunk_text(full_text, chunk_size=chunk_size, overlap=overlap)
 
     # Premium metrics
@@ -419,4 +442,5 @@ else:
             file_name="smart_doc_copilot_compare_report.pdf",
             mime="application/pdf",
         )
+
 
