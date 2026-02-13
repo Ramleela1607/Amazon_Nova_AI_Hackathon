@@ -432,7 +432,6 @@ if mode == "Single Document":
         st.session_state["latest_rt"] = response_time
 
         # Clear the input box without touching session_state widget key directly
-        st.session_state["inline_chat_input"] = ""
         st.rerun()
 
     # Render ONLY latest answer (replaces previous)
@@ -542,3 +541,4 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
