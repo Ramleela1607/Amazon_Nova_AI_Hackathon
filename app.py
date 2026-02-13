@@ -1,3 +1,4 @@
+import io
 import time
 import streamlit as st
 from pypdf import PdfReader
@@ -579,5 +580,6 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
