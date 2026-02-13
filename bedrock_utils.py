@@ -100,7 +100,7 @@ def nova_image_to_text(image_bytes: bytes, image_format: str = "png") -> str:
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=msg,
-        inferenceConfig={"maxTokens": 800, "temperature": 0.0, "topP": 0.9},
+        inferenceConfig={"maxTokens": 800, "temperature": 0.4, "topP": 0.9},
     )
     return resp["output"]["message"]["content"][0]["text"].strip()
 
@@ -132,7 +132,7 @@ Be concise. Do not invent numbers.
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=msg,
-        inferenceConfig={"maxTokens": 700, "temperature": 0.2, "topP": 0.9},
+        inferenceConfig={"maxTokens": 700, "temperature": 0.4, "topP": 0.9},
     )
     return resp["output"]["message"]["content"][0]["text"].strip()
 
@@ -165,7 +165,7 @@ Document excerpt:
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": 20, "temperature": 0.0, "topP": 0.9},
+        inferenceConfig={"maxTokens": 20, "temperature": 0.4, "topP": 0.9},
     )
     t = resp["output"]["message"]["content"][0]["text"].strip().lower()
     for allowed in ["resume", "invoice", "contract", "research_paper", "generic"]:
@@ -211,7 +211,7 @@ Document:
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": 900, "temperature": 0.1, "topP": 0.9},
+        inferenceConfig={"maxTokens": 900, "temperature": 0.4, "topP": 0.9},
     )
     return resp["output"]["message"]["content"][0]["text"]
 
@@ -258,7 +258,7 @@ QUESTION:
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": 700, "temperature": 0.2, "topP": 0.9},
+        inferenceConfig={"maxTokens": 700, "temperature": 0.4, "topP": 0.9},
     )
 
     text = resp["output"]["message"]["content"][0]["text"]
@@ -340,7 +340,7 @@ Document excerpt:
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": 120, "temperature": 0.2, "topP": 0.9},
+        inferenceConfig={"maxTokens": 120, "temperature": 0.4, "topP": 0.9},
     )
     txt = resp["output"]["message"]["content"][0]["text"].strip()
 
@@ -381,7 +381,7 @@ Content excerpt:
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": 40, "temperature": 0.2, "topP": 0.9},
+        inferenceConfig={"maxTokens": 40, "temperature": 0.4, "topP": 0.9},
     )
 
     title = resp["output"]["message"]["content"][0]["text"].strip()
@@ -440,6 +440,7 @@ Document excerpt:
         pass
 
     return []
+
 
 
 
