@@ -397,7 +397,6 @@ if mode == "Single Document":
         st.stop()
 
     # Ask UI
-    st.markdown("#### 💬 Ask a question")
     user_q = None
     if user_q:
         user_q = user_q.strip()
@@ -535,6 +534,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
