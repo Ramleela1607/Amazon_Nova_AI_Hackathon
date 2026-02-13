@@ -287,40 +287,46 @@ if mode == "Single Document":
     # -------------------------------
     st.subheader("3) Chat with your document")
     st.markdown("#### 💬 Ask a question")
-
+    
+    # 1) Input UI (no auto-run)
     q_col, btn_col = st.columns([5, 1])
+    
     with q_col:
-        user_q = st.text_input(
+        typed_q = st.text_input(
             "Type your question",
             value=st.session_state.get("_prefill_q", ""),
             placeholder="e.g., What are the key results and what do they imply?",
             label_visibility="collapsed",
+            key="typed_q",
         )
-    with btn_col:
-        ask_clicked = st.button("Ask", type="primary", use_container_width=True)
     
-    # clear prefill after showing once
+    with btn_col:
+        if st.button("Ask", type="primary", use_container_width=True):
+            q = typed_q.strip()
+            if q:
+                # Store as a one-time pending job
+                st.session_state["pending_question"] = q
+    
+    # Consume prefill once
     if "_prefill_q" in st.session_state:
         del st.session_state["_prefill_q"]
     
-    if ask_clicked and user_q.strip():
-        # --- user bubble ---
+    # 2) Run the question EXACTLY ONCE
+    if "pending_question" in st.session_state:
+        user_q = st.session_state.pop("pending_question")  # <-- pop consumes it (prevents repeats)
+    
+        # User bubble
         st.session_state.chat.append({"role": "user", "content": user_q})
         with st.chat_message("user"):
             st.markdown(user_q)
     
-        # --- retrieval ---
+        # Retrieve
         with st.spinner("Retrieving sources..."):
             hits, scores = st.session_state.single_rag.search(user_q, k=top_k)
             ctx = [h.text for h in hits]
+            avg_score = (sum(scores) / len(scores)) if scores else 0.0
     
-            # IMPORTANT: always define avg_score
-            if scores and len(scores) > 0:
-                avg_score = sum(scores) / len(scores)
-            else:
-                avg_score = 0.0
-    
-        # --- answer ---
+        # Answer
         with st.spinner("Thinking with Nova Lite..."):
             start_time = time.time()
             ans = ask_with_evidence(user_q, ctx)
@@ -329,14 +335,11 @@ if mode == "Single Document":
         answer_text = ans.get("answer", "").strip()
         evidence_text = ans.get("evidence", "").strip()
     
-        # --- assistant bubble ---
+        # Assistant bubble
         with st.chat_message("assistant"):
             b1, b2 = st.columns([1, 3])
             with b1:
-                if avg_score >= 0.25:
-                    st.success("✅ Grounded")
-                else:
-                    st.warning("⚠️ Low confidence")
+                st.success("✅ Grounded") if avg_score >= 0.25 else st.warning("⚠️ Low confidence")
             with b2:
                 st.caption(f"Retrieval strength: {avg_score:.3f}")
     
@@ -354,11 +357,10 @@ if mode == "Single Document":
             st.markdown("---")
             st.caption(f"⏱ Average response time: {response_time} sec")
     
-        # --- store logs ---
+        # Store logs
         st.session_state.chat.append({"role": "assistant", "content": answer_text})
         st.session_state.qa_log.append({"question": user_q, "answer": answer_text, "evidence": evidence_text})
-    
-        st.rerun()
+
 
 
 
@@ -568,6 +570,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
