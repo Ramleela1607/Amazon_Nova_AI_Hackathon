@@ -1,18 +1,16 @@
 import json
 from typing import List, Dict, Any
-
 import boto3
 
 # Regions
-GEN_REGION = "ap-south-1"   # Nova Lite inference profile is here for you
-EMBED_REGION = "us-east-1"  # embeddings supported here (your earlier setup)
+GEN_REGION = "ap-south-1"   # Nova Lite inference profile region
+EMBED_REGION = "us-east-1"  # embeddings supported here
 
-# IMPORTANT: use your inference profile ID (from your script output)
-# You confirmed this exists:
-#   ID: apac.amazon.nova-lite-v1:0
+# Inference profile ID you confirmed exists:
+# ID: apac.amazon.nova-lite-v1:0
 NOVA_LITE_MODEL_ID = "apac.amazon.nova-lite-v1:0"
 
-# Multimodal embeddings model ID (works from EMBED_REGION)
+# Embeddings model ID (works from EMBED_REGION)
 NOVA_MM_EMBED_MODEL_ID = "amazon.nova-2-multimodal-embeddings-v1:0"
 
 
@@ -62,24 +60,6 @@ def embed_text(text: str, dim: int = 1024) -> List[float]:
     if vec is None:
         raise ValueError(f"Could not find embedding vector in response keys: {list(out.keys())}")
     return vec
-    
-def textract_image_to_text(image_bytes: bytes, region: str = "ap-south-1") -> str:
-    import boto3
-    from botocore.exceptions import ClientError
-
-    textract = boto3.client("textract", region_name=region)
-    try:
-        resp = textract.detect_document_text(Document={"Bytes": image_bytes})
-    except ClientError as e:
-        # Show AWS error cleanly in Streamlit
-        raise RuntimeError(f"Textract error: {e.response.get('Error', {}).get('Code')} - {e.response.get('Error', {}).get('Message')}")
-
-    lines = []
-    for block in resp.get("Blocks", []):
-        if block.get("BlockType") == "LINE" and block.get("Text"):
-            lines.append(block["Text"])
-    return "\n".join(lines).strip()
-
 
 
 # ---------------- Doc type + Extraction ----------------
@@ -186,7 +166,7 @@ Document:
 
 # ---------------- Q&A with short+insight + evidence ----------------
 
-def ask_with_evidence(question: str, context_chunks: List[str]) -> dict:
+def ask_with_evidence(question: str, context_chunks: List[str]) -> Dict[str, str]:
     brt = get_bedrock_runtime(GEN_REGION)
 
     sources_block = "\n\n".join(
@@ -207,13 +187,9 @@ Answer style:
 - If information is not found, say:
   "I don't know based on the document."
 
-After the answer, add a section exactly like this:
+After the answer, add:
 
 Evidence:
-- short exact quote
-- short exact quote
-
-Evidence rules:
 - Provide 1–3 short exact quotes from the sources.
 - Keep quotes short and relevant.
 
@@ -231,17 +207,13 @@ QUESTION:
 
     text = resp["output"]["message"]["content"][0]["text"]
 
-    # Split answer and evidence cleanly
     if "Evidence:" in text:
         answer_part, evidence_part = text.split("Evidence:", 1)
     else:
         answer_part = text
         evidence_part = ""
 
-    return {
-        "answer": answer_part.strip(),
-        "evidence": evidence_part.strip()
-    }
+    return {"answer": answer_part.strip(), "evidence": evidence_part.strip()}
 
 
 # ---------------- Compare two docs ----------------
@@ -279,6 +251,3 @@ QUESTION:
         messages=[{"role": "user", "content": [{"text": prompt}]}],
     )
     return resp["output"]["message"]["content"][0]["text"]
-
-
-
