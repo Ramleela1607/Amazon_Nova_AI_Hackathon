@@ -442,7 +442,6 @@ if mode == "Single Document":
         st.session_state["latest_rt"] = response_time
     
         # OPTIONAL: clear the input after run
-        st.session_state["inline_chat_input"] = ""
         st.rerun()
     
     # Render ONLY latest output (no accumulation)
@@ -552,6 +551,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
