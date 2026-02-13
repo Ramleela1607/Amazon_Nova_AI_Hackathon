@@ -342,31 +342,6 @@ if mode == "Single Document":
         st.warning("Not enough text to chat. Upload a PDF or text-heavy image.")
         st.stop()
 
-    # Persona tabs suggestions
-    st.markdown("### ✨ Nova-suggested questions (by persona)")
-    personas = ["General", "Finance", "HR/Recruiter", "Legal", "Research/Student", "Operations"]
-    tabs = st.tabs(personas)
-
-    for i, persona in enumerate(personas):
-        with tabs[i]:
-            cache_key = f"{doc_fp}:{persona}"
-            if cache_key not in st.session_state.suggested_by_interest:
-                with st.spinner(f"Generating {persona} questions..."):
-                    st.session_state.suggested_by_interest[cache_key] = suggest_questions(full_text, user_interest=persona, n=6)
-
-            qs = st.session_state.suggested_by_interest.get(cache_key, [])
-            cols = st.columns(3)
-            for j, q in enumerate(qs):
-                with cols[j % 3]:
-                    if st.button(q, use_container_width=True, key=f"sugg_{persona}_{j}"):
-                        st.session_state["_prefill_q"] = q
-                        # put it into input box
-                        st.session_state["typed_q"] = q
-
-    st.caption("Tip: Click a suggested question, then click **Ask**.")
-
-    st.divider()
-
     # Render chat history
     for msg in st.session_state.chat:
         with st.chat_message(msg["role"]):
@@ -580,6 +555,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
