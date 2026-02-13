@@ -19,7 +19,7 @@ from bedrock_utils import (
     DOC_TYPES,
     recommend_rag_settings,
     nova_image_to_text,
-    nova_image_insights,
+    nova_image_insights_brief,   # ✅ NEW: brief insights only
     generate_report_title,
     suggest_questions,
 )
@@ -135,30 +135,19 @@ def make_pdf_report(filename: str, title: str, sections: list[tuple[str, str]]) 
 
 def reset_session():
     st.session_state["uploader_key"] = st.session_state.get("uploader_key", 0) + 1
-    st.session_state["q_key"] = st.session_state.get("q_key", 0) + 1
-
     for k in [
-        "chat", "qa_log", "single_rag",
-        "rag_a", "rag_b", "last_compare", "last_compare_q",
+        "single_rag", "index_fp",
+        "last_doc_fp", "auto_rag_settings",
+        "suggest_fp", "suggested_questions",
+        "latest_answer", "latest_evidence", "latest_sources",
         "pending_question",
-        "last_doc_fp",
-        "auto_rag_settings",
-        "suggested_questions",
-        "suggest_fp",
-        "index_fp",
+        "compare_fp", "rag_a", "rag_b",
     ]:
         if k in st.session_state:
             del st.session_state[k]
-
     st.rerun()
 
 def build_index_if_needed(full_text: str, chunk_size: int, overlap: int):
-    """
-    Auto-build FAISS index if document/settings changed.
-    Stores:
-      - st.session_state.single_rag
-      - st.session_state.index_fp
-    """
     if not full_text or len(full_text.strip()) < 10:
         return
 
@@ -166,7 +155,7 @@ def build_index_if_needed(full_text: str, chunk_size: int, overlap: int):
     new_fp = hashlib.md5(fp_src.encode("utf-8", errors="ignore")).hexdigest()
 
     if st.session_state.get("index_fp") == new_fp and isinstance(st.session_state.get("single_rag"), RagIndex):
-        return  # already built for this doc/settings
+        return
 
     chunks = chunk_text(full_text, chunk_size=chunk_size, overlap=overlap)
     with st.spinner("🚀 Auto-building index (Nova embeddings → FAISS)..."):
@@ -176,16 +165,9 @@ def build_index_if_needed(full_text: str, chunk_size: int, overlap: int):
     st.session_state["single_rag"] = rag
     st.session_state["index_fp"] = new_fp
 
-
 # ---------- Session init ----------
-if "chat" not in st.session_state:
-    st.session_state.chat = []
-if "qa_log" not in st.session_state:
-    st.session_state.qa_log = []
 if "uploader_key" not in st.session_state:
     st.session_state.uploader_key = 0
-if "q_key" not in st.session_state:
-    st.session_state.q_key = 0
 
 # ---------- Sidebar ----------
 st.sidebar.header("⚙️ Controls")
@@ -224,13 +206,15 @@ if mode == "Single Document":
         st.stop()
 
     full_text_parts = []
+    image_ocr_text = ""
+    image_brief_insights = ""
 
     # PDF
     if uploaded_pdf is not None:
         pdf_text = extract_text_from_pdf(uploaded_pdf)
         full_text_parts.append("=== PDF TEXT ===\n" + pdf_text)
 
-    # Image -> text + insights
+    # Image -> internal text + brief insights (UI shows ONLY brief insights)
     if uploaded_img is not None:
         img = Image.open(uploaded_img)
         st.image(img, caption="Uploaded image", use_container_width=True)
@@ -241,29 +225,32 @@ if mode == "Single Document":
         img_bytes = buf.getvalue()
         img_fmt = "png"
 
-        with st.spinner("🔍 Reading image with Nova Lite (multimodal)..."):
+        with st.spinner("🔍 Understanding image with Nova Lite (multimodal)..."):
             try:
-                ocr_text = nova_image_to_text(img_bytes, image_format=img_fmt)
+                image_ocr_text = nova_image_to_text(img_bytes, image_format=img_fmt)
             except Exception as e:
-                ocr_text = ""
-                st.error(f"Image extraction failed: {e}")
+                image_ocr_text = ""
+                st.error(f"Image reading failed: {e}")
 
-        with st.spinner("💡 Generating image insights with Nova Lite..."):
+        with st.spinner("💡 Creating brief image insight..."):
             try:
-                insights = nova_image_insights(img_bytes, image_format=img_fmt)
+                image_brief_insights = nova_image_insights_brief(img_bytes, image_format=img_fmt)
             except Exception as e:
-                insights = ""
+                image_brief_insights = ""
                 st.error(f"Image insights failed: {e}")
 
-        if ocr_text.strip():
-            with st.expander("🧾 Extracted image text", expanded=False):
-                st.text_area("OCR text", ocr_text, height=160)
-            full_text_parts.append("=== IMAGE TEXT (NOVA) ===\n" + ocr_text)
-
-        if insights.strip():
+        # ✅ UI: show only the brief format you asked
+        if image_brief_insights.strip():
             with st.expander("✨ Image insights", expanded=True):
-                st.markdown(insights)
-            full_text_parts.append("=== IMAGE INSIGHTS (NOVA) ===\n" + insights)
+                st.markdown(image_brief_insights)
+
+        # ✅ Internal: add OCR text for retrieval (but not shown)
+        if image_ocr_text.strip():
+            full_text_parts.append("=== IMAGE TEXT (INTERNAL OCR) ===\n" + image_ocr_text)
+
+        # ✅ Internal: also add the brief insight as searchable context
+        if image_brief_insights.strip():
+            full_text_parts.append("=== IMAGE INSIGHTS (BRIEF) ===\n" + image_brief_insights)
 
     # Notes
     if user_text.strip():
@@ -271,55 +258,47 @@ if mode == "Single Document":
 
     full_text = "\n\n".join(full_text_parts)
 
-    # Doc fingerprint
+    # doc fingerprint
     doc_fp = hashlib.md5(full_text[:20000].encode("utf-8", errors="ignore")).hexdigest()
 
-    # Auto RAG settings cached per doc
+    # Auto settings per doc
     if st.session_state.get("last_doc_fp") != doc_fp:
         st.session_state["last_doc_fp"] = doc_fp
-        with st.spinner("⚙️ Auto-tuning retrieval settings with Nova Lite..."):
+        with st.spinner("⚙️ Nova is auto-optimizing retrieval settings..."):
             st.session_state["auto_rag_settings"] = recommend_rag_settings(full_text)
 
-        # reset suggestion cache for new doc
-        for k2 in ["suggested_questions", "suggest_fp"]:
-            if k2 in st.session_state:
-                del st.session_state[k2]
+        # reset suggestion cache
+        for kk in ["suggest_fp", "suggested_questions"]:
+            if kk in st.session_state:
+                del st.session_state[kk]
+
+        # also force index rebuild
+        st.session_state.pop("index_fp", None)
 
     rec = st.session_state.get("auto_rag_settings", {"chunk_size": 1000, "overlap": 150, "top_k": 4})
     auto_chunk_size, auto_overlap, auto_top_k = rec["chunk_size"], rec["overlap"], rec["top_k"]
 
-    # Sidebar: retrieval controls (auto default)
+    # ✅ Retrieval settings ONLY in sidebar (adjustable, but auto suggested)
     st.sidebar.subheader("🔎 Retrieval settings")
     use_auto = st.sidebar.toggle("Use Nova auto-optimized settings", value=True)
 
     if use_auto:
         chunk_size, overlap, top_k = auto_chunk_size, auto_overlap, auto_top_k
-        st.sidebar.caption(f"Auto: chunk={chunk_size}, overlap={overlap}, top_k={top_k}")
+        st.sidebar.caption(f"Auto suggested: chunk={chunk_size}, overlap={overlap}, top_k={top_k}")
     else:
         chunk_size = st.sidebar.slider("Chunk size (chars)", 300, 2000, int(auto_chunk_size), 50)
         overlap = st.sidebar.slider("Overlap (chars)", 0, 400, int(auto_overlap), 25)
         top_k = st.sidebar.slider("Top-K sources", 2, 8, int(auto_top_k), 1)
 
-    # Optional manual rebuild button
     if st.sidebar.button("♻️ Rebuild index now", use_container_width=True):
-        st.session_state.pop("index_fp", None)  # force rebuild next call
+        st.session_state.pop("index_fp", None)
 
-    # ✅ AUTO BUILD INDEX HERE
+    # ✅ auto build index
     build_index_if_needed(full_text, chunk_size=chunk_size, overlap=overlap)
-
-    # Metrics
-    chunks_preview = chunk_text(full_text, chunk_size=chunk_size, overlap=overlap)
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Chunks", len(chunks_preview))
-    c2.metric("Top-K", top_k)
-    c3.metric("Mode", "Single")
-
-    with st.expander("📄 Combined text preview", expanded=False):
-        st.text_area("Preview", full_text[:8000], height=240)
 
     st.divider()
 
-    # Extraction
+    # Extract fields
     st.subheader("2) Extract key fields (JSON)")
     doc_type = st.selectbox("Document type", DOC_TYPES, index=0)
     if st.button("🧾 Extract key fields as JSON", use_container_width=True):
@@ -356,82 +335,71 @@ if mode == "Single Document":
 
     st.divider()
 
-    # Chat
+    # ✅ Chat section (NO accumulating outputs)
     st.subheader("3) Chat with your document")
 
-    index_ready = isinstance(st.session_state.get("single_rag", None), RagIndex)
-    if not index_ready:
-        st.error("Index did not build. Try uploading a richer doc/image or click Reset.")
+    rag = st.session_state.get("single_rag", None)
+    if not isinstance(rag, RagIndex):
+        st.error("Index not ready. Try clicking **Rebuild index now** in the sidebar, or Reset.")
         st.stop()
 
     if len(full_text.strip()) < 50:
-        st.warning("Not enough text to chat. Upload a PDF or text-heavy image.")
+        st.warning("Not enough text to chat. Upload a PDF or a text-heavy image.")
         st.stop()
 
-    for msg in st.session_state.chat:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-
+    # Ask UI
     st.markdown("#### 💬 Ask a question")
-
+    user_q = None
     if "pending_question" in st.session_state:
-        q_to_ask = st.session_state.pop("pending_question")
+        user_q = st.session_state.pop("pending_question")
     else:
-        q_to_ask = ""
+        user_q = st.chat_input("Ask something about the document…")
 
-    with st.form(key=f"ask_form_{st.session_state['q_key']}", clear_on_submit=True):
-        q = st.text_input(
-            "Type your question",
-            value=q_to_ask,
-            placeholder="e.g., What are the key results and what do they imply?",
-            label_visibility="collapsed",
-        )
-        ask_clicked = st.form_submit_button("Ask", use_container_width=True)
+    if user_q:
+        user_q = user_q.strip()
+        if user_q:
+            with st.spinner("Retrieving sources..."):
+                hits, scores = rag.search(user_q, k=top_k)
+                ctx = [h.text for h in hits]
 
-    if ask_clicked and q.strip():
-        user_q = q.strip()
-        rag = st.session_state.single_rag
+            with st.spinner("Thinking with Nova Lite..."):
+                start_time = time.time()
+                ans = ask_with_evidence(user_q, ctx)
+                response_time = round(time.time() - start_time, 2)
 
-        st.session_state.chat.append({"role": "user", "content": user_q})
-        with st.chat_message("user"):
-            st.markdown(user_q)
+            answer_text = ans.get("answer", "").strip()
+            evidence_text = ans.get("evidence", "").strip()
 
-        with st.spinner("Retrieving sources..."):
-            hits, scores = rag.search(user_q, k=top_k)
-            ctx = [h.text for h in hits]
+            st.session_state["latest_answer"] = answer_text if answer_text else "I don't know based on the document."
+            st.session_state["latest_evidence"] = evidence_text
+            st.session_state["latest_sources"] = list(zip(hits, scores))
+            st.session_state["latest_q"] = user_q
+            st.session_state["latest_rt"] = response_time
 
-        with st.spinner("Thinking with Nova Lite..."):
-            start_time = time.time()
-            ans = ask_with_evidence(user_q, ctx)
-            response_time = round(time.time() - start_time, 2)
+    # ✅ Render ONLY latest answer (replaces previous)
+    if st.session_state.get("latest_answer"):
+        st.markdown(f"### ✅ Latest Answer")
+        st.markdown(f"**Question:** {st.session_state.get('latest_q','')}")
+        st.markdown(st.session_state.get("latest_answer", ""))
 
-        answer_text = ans.get("answer", "").strip()
-        evidence_text = ans.get("evidence", "").strip()
+        ev = st.session_state.get("latest_evidence", "")
+        if ev:
+            with st.expander("📌 Evidence (exact quotes)"):
+                st.markdown(ev)
 
-        with st.chat_message("assistant"):
-            st.markdown(answer_text if answer_text else "I don't know based on the document.")
+        sources = st.session_state.get("latest_sources", [])
+        if sources:
+            with st.expander("📚 Retrieved sources (debug)", expanded=False):
+                for i, (h, s) in enumerate(sources, start=1):
+                    st.markdown(f"**Source {i} • score {s:.3f} • chunk #{h.chunk_id}**")
+                    st.write(h.text[:1200])
+                    st.markdown("---")
 
-            if evidence_text:
-                with st.expander("📌 Evidence (exact quotes)"):
-                    st.markdown(evidence_text)
-
-            st.markdown("**Retrieved sources**")
-            for i, (h, s) in enumerate(zip(hits, scores), start=1):
-                with st.expander(f"Source {i} • score {s:.3f} • chunk #{h.chunk_id}"):
-                    st.write(h.text[:2000])
-
-            st.markdown("---")
-            st.caption(f"⏱ Average response time: {response_time} sec")
-
-        st.session_state.chat.append({"role": "assistant", "content": answer_text})
-        st.session_state.qa_log.append({"question": user_q, "answer": answer_text, "evidence": evidence_text})
-
-        st.session_state["q_key"] += 1
-        st.rerun()
+        st.caption(f"⏱ Average response time: {st.session_state.get('latest_rt', 0)} sec")
 
     st.divider()
 
-    # PDF Export
+    # Export
     st.subheader("4) Export report (PDF)")
     if st.button("📄 Generate PDF report", use_container_width=True):
         with st.spinner("Creating a title with Nova Lite..."):
@@ -439,19 +407,20 @@ if mode == "Single Document":
 
         auto_type = detect_doc_type(full_text)
 
-        qa_text = ""
-        for i, item in enumerate(st.session_state.qa_log[-10:], start=1):
-            qa_text += f"{i}. Q: {item['question']}\nA: {item['answer']}\n"
-            if item.get("evidence"):
-                qa_text += f"Evidence:\n{item['evidence']}\n"
-            qa_text += "\n"
+        latest_block = ""
+        if st.session_state.get("latest_answer"):
+            latest_block = (
+                f"Question: {st.session_state.get('latest_q','')}\n\n"
+                f"Answer:\n{st.session_state.get('latest_answer','')}\n\n"
+                f"Evidence:\n{st.session_state.get('latest_evidence','')}\n"
+            )
 
         sections = [
             ("Report title (generated)", report_title),
             ("Document type (auto)", auto_type),
             ("Retrieval settings", f"chunk_size={chunk_size}, overlap={overlap}, top_k={top_k}"),
-            ("Combined text preview (first 1200 chars)", full_text[:1200]),
-            ("Recent Q&A (up to last 10)", qa_text or "No Q&A yet."),
+            ("Document preview (first 1200 chars)", full_text[:1200]),
+            ("Latest Q&A", latest_block or "No Q&A yet."),
         ]
 
         safe_filename = "".join(ch for ch in report_title if ch.isalnum() or ch in (" ", "-", "_")).strip()
@@ -481,7 +450,7 @@ else:
         up_b = st.file_uploader("Upload PDF (Doc B)", type=["pdf"], key=f"docB_{k}")
 
     if up_a is None or up_b is None:
-        st.info("Upload both PDFs → Index builds automatically → Ask a comparison question.")
+        st.info("Upload both PDFs → Ask a comparison question.")
         st.stop()
 
     text_a = extract_text_from_pdf(up_a)
@@ -489,25 +458,12 @@ else:
 
     with st.spinner("⚙️ Auto-tuning retrieval settings for comparison..."):
         rec = recommend_rag_settings(text_a + "\n\n" + text_b)
-
     chunk_size, overlap, top_k = rec["chunk_size"], rec["overlap"], rec["top_k"]
-
-    st.sidebar.subheader("🔎 Retrieval settings")
-    use_auto = st.sidebar.toggle("Use Nova auto-optimized settings", value=True, key="use_auto_compare")
-
-    if not use_auto:
-        chunk_size = st.sidebar.slider("Chunk size (chars)", 300, 2000, int(chunk_size), 50, key="cs_compare")
-        overlap = st.sidebar.slider("Overlap (chars)", 0, 400, int(overlap), 25, key="ov_compare")
-        top_k = st.sidebar.slider("Top-K sources", 2, 8, int(top_k), 1, key="tk_compare")
-    else:
-        st.sidebar.caption(f"Auto: chunk={chunk_size}, overlap={overlap}, top_k={top_k}")
 
     chunks_a = chunk_text(text_a, chunk_size=chunk_size, overlap=overlap)
     chunks_b = chunk_text(text_b, chunk_size=chunk_size, overlap=overlap)
 
-    # AUTO-build indexes in compare mode
-    if st.session_state.get("compare_fp") != hashlib.md5((text_a[:12000] + text_b[:12000] + str(chunk_size) + str(overlap)).encode("utf-8", errors="ignore")).hexdigest():
-        st.session_state["compare_fp"] = hashlib.md5((text_a[:12000] + text_b[:12000] + str(chunk_size) + str(overlap)).encode("utf-8", errors="ignore")).hexdigest()
+    if "rag_a" not in st.session_state or "rag_b" not in st.session_state:
         with st.spinner("🚀 Auto-building indexes for Doc A & Doc B..."):
             rag_a = RagIndex(dim=1024)
             rag_a.add_chunks(chunks_a)
@@ -515,18 +471,6 @@ else:
             rag_b.add_chunks(chunks_b)
         st.session_state["rag_a"] = rag_a
         st.session_state["rag_b"] = rag_b
-
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Doc A chunks", len(chunks_a))
-    m2.metric("Doc B chunks", len(chunks_b))
-    m3.metric("Top-K", top_k)
-
-    if not isinstance(st.session_state.get("rag_a", None), RagIndex) or not isinstance(st.session_state.get("rag_b", None), RagIndex):
-        st.error("Indexes not ready.")
-        st.stop()
-
-    st.divider()
-    st.subheader("2) Ask a comparison question")
 
     q = st.text_input("Comparison question", placeholder="e.g., Which document shows stronger results and why?")
     if st.button("🆚 Compare", use_container_width=True):
