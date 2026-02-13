@@ -150,6 +150,46 @@ def nova_image_insights(image_bytes: bytes, image_format: str = "png") -> str:
     )
     return resp["output"]["message"]["content"][0]["text"].strip()
 
+def generate_report_title(doc_text: str) -> str:
+    """
+    Creates a short, human-friendly report title from the document content.
+    Returns plain text (no quotes/backticks).
+    """
+    brt = get_bedrock_runtime(GEN_REGION)
+
+    prompt = f"""
+You are a helpful assistant. Create a short report title based on the content.
+
+Rules:
+- 4 to 8 words
+- Title Case
+- No quotes, no punctuation at the end
+- No emojis
+- If content is unclear, output: Smart Document Report
+
+Content excerpt:
+{doc_text[:6000]}
+"""
+    resp = brt.converse(
+        modelId=NOVA_LITE_MODEL_ID,
+        messages=[{"role": "user", "content": [{"text": prompt}]}],
+        inferenceConfig={"maxTokens": 40, "temperature": 0.2, "topP": 0.9},
+    )
+
+    title = resp["output"]["message"]["content"][0]["text"].strip()
+
+    # Safety cleanup
+    title = title.replace('"', "").replace("`", "").strip()
+    if not title:
+        return "Smart Document Report"
+
+    # Keep it short
+    words = title.split()
+    if len(words) > 10:
+        title = " ".join(words[:10])
+
+    return title
+
 
 # ---------------- Doc type + Extraction ----------------
 
@@ -319,3 +359,4 @@ QUESTION:
         messages=[{"role": "user", "content": [{"text": prompt}]}],
     )
     return resp["output"]["message"]["content"][0]["text"]
+
