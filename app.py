@@ -231,6 +231,13 @@ if mode == "Single Document":
         full_text_parts.append("=== USER NOTES ===\n" + user_text.strip())
 
     full_text = "\n\n".join(full_text_parts)
+    with st.spinner("⚙️ Auto-tuning RAG settings with Nova Lite..."):
+        rec = recommend_rag_settings(full_text)
+
+    chunk_size = rec["chunk_size"]
+    overlap = rec["overlap"]
+    top_k = rec["top_k"]
+
     chunks = chunk_text(full_text, chunk_size=chunk_size, overlap=overlap)
 
     # Metrics
@@ -480,6 +487,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
