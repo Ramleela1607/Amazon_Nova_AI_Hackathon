@@ -126,8 +126,25 @@ def make_pdf_report(filename: str, title: str, sections: list[tuple[str, str]]) 
         return f.read()
 
 def reset_session():
-    for k in list(st.session_state.keys()):
-        del st.session_state[k]
+    # Keep a persistent counter to force new widget instances
+    st.session_state["uploader_key"] = st.session_state.get("uploader_key", 0) + 1
+
+    # Clear chat + indexes + logs (only what you need)
+    for k in [
+        "chat",
+        "qa_log",
+        "single_rag",
+        "rag_a",
+        "rag_b",
+        "last_compare",
+        "last_compare_q",
+        "_prefill_q",
+    ]:
+        if k in st.session_state:
+            del st.session_state[k]
+
+    # Force refresh
+    st.rerun()
 
 # ---------- Sidebar ----------
 st.sidebar.header("⚙️ Controls")
@@ -151,10 +168,19 @@ if "qa_log" not in st.session_state:
 # Mode: Single Document
 # =======================
 if mode == "Single Document":
-    uploaded_pdf = st.file_uploader("📤 Upload a PDF (optional)", type=["pdf"])
-    uploaded_img = st.file_uploader("🖼️ Upload an Image (optional)", type=["png", "jpg", "jpeg", "webp"])
+    k = st.session_state.get("uploader_key", 0)
+    
+    uploaded_pdf = st.file_uploader(
+        "📤 Upload a PDF (optional)",
+        type=["pdf"],
+        key=f"pdf_uploader_{k}",
+    )
+    uploaded_img = st.file_uploader(
+        "🖼️ Upload an Image (optional)",
+        type=["png", "jpg", "jpeg", "webp"],
+        key=f"img_uploader_{k}",
+    )
     user_text = st.text_area("✍️ Paste extra text / notes (optional)", height=100)
-
     if uploaded_pdf is None and uploaded_img is None and not user_text.strip():
         st.info("Upload a PDF or Image (or paste text) → Build Index → Start chatting.")
         st.stop()
@@ -432,3 +458,4 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
