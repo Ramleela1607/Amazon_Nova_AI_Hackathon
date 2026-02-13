@@ -1,16 +1,16 @@
 import json
-from typing import List, Dict, Any
+from typing import List, Dict
 import boto3
 
 # Regions
 GEN_REGION = "ap-south-1"   # Nova Lite inference profile region
 EMBED_REGION = "us-east-1"  # embeddings supported here
 
-# Inference profile ID you confirmed exists:
-# ID: apac.amazon.nova-lite-v1:0
+# Use your inference profile ID (you confirmed this exists)
+# Example: apac.amazon.nova-lite-v1:0
 NOVA_LITE_MODEL_ID = "apac.amazon.nova-lite-v1:0"
 
-# Embeddings model ID (works from EMBED_REGION)
+# Multimodal embeddings model ID (works from EMBED_REGION)
 NOVA_MM_EMBED_MODEL_ID = "amazon.nova-2-multimodal-embeddings-v1:0"
 
 
@@ -62,41 +62,113 @@ def embed_text(text: str, dim: int = 1024) -> List[float]:
     return vec
 
 
+# ---------------- Image -> Text / Insights (Nova Lite multimodal) ----------------
+
+def _normalize_img_format(fmt: str) -> str:
+    fmt = (fmt or "").lower().strip(". ")
+    if fmt in ("jpg", "jpe"):
+        return "jpeg"
+    if fmt not in ("png", "jpeg", "webp"):
+        # Nova supports common formats; fallback to jpeg
+        return "jpeg"
+    return fmt
+
+
+def nova_image_to_text(image_bytes: bytes, image_format: str = "png") -> str:
+    """
+    Uses Nova Lite multimodal to extract all visible text from the image.
+    This replaces Textract for your hackathon/demo.
+    """
+    brt = get_bedrock_runtime(GEN_REGION)
+    image_format = _normalize_img_format(image_format)
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "image": {
+                        "format": image_format,
+                        "source": {"bytes": image_bytes},
+                    }
+                },
+                {
+                    "text": (
+                        "Extract ALL visible text from this image.\n"
+                        "Rules:\n"
+                        "- Output ONLY the extracted text.\n"
+                        "- Preserve line breaks.\n"
+                        "- If there is no text, output exactly: NO_TEXT_FOUND"
+                    )
+                },
+            ],
+        }
+    ]
+
+    resp = brt.converse(
+        modelId=NOVA_LITE_MODEL_ID,
+        messages=messages,
+        inferenceConfig={"maxTokens": 700, "temperature": 0.0, "topP": 0.9},
+    )
+
+    txt = resp["output"]["message"]["content"][0]["text"].strip()
+    if "NO_TEXT_FOUND" in txt.upper():
+        return ""
+    return txt
+
+
+def nova_image_insights(image_bytes: bytes, image_format: str = "png") -> str:
+    """
+    Uses Nova Lite multimodal to generate short insights from the image.
+    Good for making demo look "smart" even if image has minimal text.
+    """
+    brt = get_bedrock_runtime(GEN_REGION)
+    image_format = _normalize_img_format(image_format)
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"image": {"format": image_format, "source": {"bytes": image_bytes}}},
+                {
+                    "text": (
+                        "Give:\n"
+                        "1) A 1-line description of the image\n"
+                        "2) 3 bullet key insights (short)\n"
+                        "3) If you see numbers/dates, list them\n"
+                        "Be concise."
+                    )
+                },
+            ],
+        }
+    ]
+
+    resp = brt.converse(
+        modelId=NOVA_LITE_MODEL_ID,
+        messages=messages,
+        inferenceConfig={"maxTokens": 350, "temperature": 0.2, "topP": 0.9},
+    )
+    return resp["output"]["message"]["content"][0]["text"].strip()
+
+
 # ---------------- Doc type + Extraction ----------------
 
 DOC_TYPES = ["auto", "resume", "invoice", "contract", "research_paper", "generic"]
 
 EXTRACTION_SCHEMAS = {
     "resume": {
-        "fields": [
-            "name", "email", "phone", "location",
-            "skills", "years_experience", "latest_role",
-            "education", "certifications"
-        ]
+        "fields": ["name", "email", "phone", "location", "skills", "years_experience", "latest_role", "education", "certifications"]
     },
     "invoice": {
-        "fields": [
-            "vendor", "invoice_number", "invoice_date",
-            "due_date", "total_amount", "currency", "line_items"
-        ]
+        "fields": ["vendor", "invoice_number", "invoice_date", "due_date", "total_amount", "currency", "line_items"]
     },
     "contract": {
-        "fields": [
-            "parties", "effective_date", "end_date",
-            "termination_clause", "payment_terms", "governing_law",
-            "key_obligations", "risks"
-        ]
+        "fields": ["parties", "effective_date", "end_date", "termination_clause", "payment_terms", "governing_law", "key_obligations", "risks"]
     },
     "research_paper": {
-        "fields": [
-            "title", "authors", "abstract_summary",
-            "methodology", "metrics", "key_results",
-            "limitations", "future_work"
-        ]
+        "fields": ["title", "authors", "abstract_summary", "methodology", "metrics", "key_results", "limitations", "future_work"]
     },
-    "generic": {
-        "fields": ["summary", "key_points", "dates", "numbers", "entities"]
-    },
+    "generic": {"fields": ["summary", "key_points", "dates", "numbers", "entities"]},
 }
 
 
@@ -169,9 +241,7 @@ Document:
 def ask_with_evidence(question: str, context_chunks: List[str]) -> Dict[str, str]:
     brt = get_bedrock_runtime(GEN_REGION)
 
-    sources_block = "\n\n".join(
-        [f"[Source {i+1}]\n{c}" for i, c in enumerate(context_chunks)]
-    )
+    sources_block = "\n\n".join([f"[Source {i+1}]\n{c}" for i, c in enumerate(context_chunks)])
 
     prompt = f"""
 You are Smart Document Copilot.
@@ -199,7 +269,6 @@ SOURCES:
 QUESTION:
 {question}
 """
-
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
@@ -210,8 +279,7 @@ QUESTION:
     if "Evidence:" in text:
         answer_part, evidence_part = text.split("Evidence:", 1)
     else:
-        answer_part = text
-        evidence_part = ""
+        answer_part, evidence_part = text, ""
 
     return {"answer": answer_part.strip(), "evidence": evidence_part.strip()}
 
