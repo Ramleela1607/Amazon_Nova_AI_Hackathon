@@ -459,7 +459,6 @@ Content excerpt:
 def suggest_questions(doc_text: str, user_interest: str = "General", n: int = 6) -> List[str]:
     brt = get_bedrock_runtime(GEN_REGION)
 
-    # Keep a decent amount of text; too short -> suggestions are weak/empty
     excerpt = (doc_text or "").strip()
     excerpt = excerpt[:12000] if len(excerpt) > 12000 else excerpt
 
@@ -469,9 +468,9 @@ You are a smart document copilot.
 Generate {n} useful questions a user might ask about this document,
 personalized for the user's interest/role: {user_interest}.
 
-IMPORTANT OUTPUT RULES:
-- Prefer returning ONLY a valid JSON array of strings.
-- If you cannot produce JSON, return one question per line (no bullets, no numbering).
+OUTPUT RULES (VERY IMPORTANT):
+- Return ONLY a valid JSON array of strings like: ["q1","q2",...]
+- No extra text, no markdown, no code fences.
 - Each question must be <= 12 words.
 - Make questions specific to the document.
 - Mix: summary, key numbers, risks, actions, and one missing-info check.
@@ -488,51 +487,63 @@ Document excerpt:
 
     txt = (resp["output"]["message"]["content"][0]["text"] or "").strip()
 
-    # 1) Try strict JSON
+    # 1) strict JSON
     try:
-        arr = json.loads(txt)
+        arr = json.loads(_strip_code_fences(txt))
         if isinstance(arr, list):
             out = [q.strip() for q in arr if isinstance(q, str) and q.strip()]
-            return out[:n]
+            # de-dup
+            seen = set()
+            cleaned = []
+            for q in out:
+                k = q.lower()
+                if k not in seen:
+                    seen.add(k)
+                    cleaned.append(q)
+            return cleaned[:n]
     except Exception:
         pass
 
-    # 2) Try to extract a JSON array embedded in extra text
-    #    e.g. "Sure! Here you go: [ ... ]"
+    # 2) try extracting first JSON array from messy output
     try:
-        start = txt.find("[")
-        end = txt.rfind("]")
-        if start != -1 and end != -1 and end > start:
-            candidate = txt[start : end + 1]
-            arr = json.loads(candidate)
-            if isinstance(arr, list):
-                out = [q.strip() for q in arr if isinstance(q, str) and q.strip()]
-                return out[:n]
+        json_arr_str = _extract_json_array(txt)  # uses your helper
+        arr = json.loads(json_arr_str)
+        if isinstance(arr, list):
+            out = [q.strip() for q in arr if isinstance(q, str) and q.strip()]
+            seen = set()
+            cleaned = []
+            for q in out:
+                k = q.lower()
+                if k not in seen:
+                    seen.add(k)
+                    cleaned.append(q)
+            return cleaned[:n]
     except Exception:
         pass
 
-    # 3) Fallback: parse as lines (no JSON)
+    # 3) fallback: parse as lines if model didn't return JSON
     lines = []
-    for line in txt.splitlines():
+    for line in _strip_code_fences(txt).splitlines():
         line = line.strip().lstrip("-•").strip()
         if not line:
             continue
-        # remove accidental numbering like "1) " or "1. "
-        if len(line) > 2 and (line[0].isdigit() and line[1] in [")", "."]):
+        # remove numbering like "1) " or "1. "
+        if len(line) > 2 and line[0].isdigit() and line[1] in [")", "."]:
             line = line[2:].strip()
         if line:
             lines.append(line)
 
-    # de-dup preserving order
     seen = set()
-    out = []
+    cleaned = []
     for q in lines:
-        key = q.lower()
-        if key not in seen:
-            seen.add(key)
-            out.append(q)
-        if len(out) >= n:
+        k = q.lower()
+        if k not in seen:
+            seen.add(k)
+            cleaned.append(q)
+        if len(cleaned) >= n:
             break
 
-    return out
+    return cleaned
+
+
 
