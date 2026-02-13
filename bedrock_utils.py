@@ -550,41 +550,51 @@ Document excerpt:
 # -------------------------
 def generate_dashboard_insights(doc_text: str) -> dict:
     """
-    Hackathon-grade executive dashboard output.
-    Includes risk score + structured insights for charts/timeline.
+    Generate structured dashboard insights using Nova.
+    Returns strict JSON with:
+    - summary
+    - doc_type_guess
+    - risk_score
+    - key_numbers [{label,value}]
+    - key_dates [{label,value}]
+    - risks [str]
+    - next_actions [str]
     """
+
     brt = get_bedrock_runtime(GEN_REGION)
-    excerpt = (doc_text or "").strip()[:12000]
+
+    excerpt = (doc_text or "").strip()
+    excerpt = excerpt[:15000]
 
     prompt = f"""
-You are an executive document analyst.
+You are an executive document intelligence system.
 
-Return ONLY valid JSON in EXACTLY this format:
+Analyze the document and return STRICT JSON only.
+
+Required JSON format:
 
 {{
-  "summary": "2-3 sentence executive summary",
-  "doc_type_guess": "invoice|contract|resume|research_paper|generic",
-  "risk_score": 0,
+  "summary": "2-4 sentence executive summary",
+  "doc_type_guess": "invoice | contract | resume | research_paper | generic",
+  "risk_score": 0-100,
   "key_numbers": [
-    {{"label": "Metric name", "value": "value"}}
+    {{"label": "Metric name", "value": "exact visible value"}}
   ],
   "key_dates": [
-    {{"label": "Date description", "value": "date"}}
+    {{"label": "Event name", "value": "exact date string"}}
   ],
-  "risks": [
-    "short risk statement"
-  ],
-  "next_actions": [
-    "clear practical action"
-  ]
+  "risks": ["short risk statement"],
+  "next_actions": ["short action recommendation"]
 }}
 
 Rules:
-- risk_score must be integer 0 to 100.
-- Extract REAL visible values only. Do NOT invent numbers/dates.
-- Keep each list max 6 items.
-- If not found, return empty lists [].
-- Return ONLY JSON. No extra text.
+- Output VALID JSON only.
+- Do not include markdown.
+- Do not include commentary.
+- key_dates must pair a real event with a real visible date.
+- risk_score must reflect financial, legal, deadline, or compliance risk.
+- If something does not exist, return empty list.
+- Do NOT hallucinate.
 
 Document:
 {excerpt}
@@ -593,28 +603,24 @@ Document:
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": 650, "temperature": 0.2, "topP": 0.9},
+        inferenceConfig={"maxTokens": 800, "temperature": 0.2, "topP": 0.9},
     )
 
-    txt = (resp["output"]["message"]["content"][0]["text"] or "").strip()
+    raw = resp["output"]["message"]["content"][0]["text"].strip()
 
-    # Parse robustly (handles accidental extra text)
+    # Clean possible formatting issues
     try:
-        return json.loads(txt)
+        start = raw.find("{")
+        end = raw.rfind("}")
+        cleaned = raw[start:end+1]
+        return json.loads(cleaned)
     except Exception:
-        try:
-            return json.loads(_extract_json_object(txt))
-        except Exception:
-            return {
-                "summary": "",
-                "doc_type_guess": "generic",
-                "risk_score": 0,
-                "key_numbers": [],
-                "key_dates": [],
-                "risks": [],
-                "next_actions": [],
-            }
-
-
-
-
+        return {
+            "summary": "",
+            "doc_type_guess": "generic",
+            "risk_score": 0,
+            "key_numbers": [],
+            "key_dates": [],
+            "risks": [],
+            "next_actions": [],
+        }
