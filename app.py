@@ -3,6 +3,7 @@ import time
 import streamlit as st
 from pypdf import PdfReader
 from PIL import Image
+import hashlib
 
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
@@ -268,7 +269,7 @@ if mode == "Single Document":
     full_text = "\n\n".join(full_text_parts)
 
     # Auto RAG settings (cache per doc)
-    doc_fp = str(hash(full_text[:20000]))
+    doc_fp = hashlib.md5(full_text[:20000].encode("utf-8", errors="ignore")).hexdigest()
 
     if st.session_state.get("last_doc_fp") != doc_fp:
         st.session_state["last_doc_fp"] = doc_fp
@@ -594,6 +595,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
