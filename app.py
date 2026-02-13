@@ -286,6 +286,67 @@ if mode == "Single Document":
     # Enhanced Chat
     # -------------------------------
     st.subheader("3) Chat with your document")
+    st.markdown("#### 💬 Ask a question")
+
+    q_col, btn_col = st.columns([5, 1])
+    with q_col:
+        user_q = st.text_input(
+            "Type your question",
+            value=st.session_state.get("_prefill_q", ""),
+            placeholder="e.g., What are the key results and what do they imply?",
+            label_visibility="collapsed",
+        )
+    with btn_col:
+        ask_clicked = st.button("Ask", type="primary", use_container_width=True)
+    
+    # clear prefill after showing once
+    if "_prefill_q" in st.session_state:
+        del st.session_state["_prefill_q"]
+    
+    if ask_clicked and user_q.strip():
+        st.session_state.chat.append({"role": "user", "content": user_q})
+        with st.chat_message("user"):
+            st.markdown(user_q)
+    
+        with st.spinner("Retrieving sources..."):
+            hits, scores = st.session_state.single_rag.search(user_q, k=top_k)
+            ctx = [h.text for h in hits]
+            avg_score = (sum(scores) / len(scores)) if scores else 0.0
+    
+        with st.spinner("Thinking with Nova Lite..."):
+            start_time = time.time()
+            ans = ask_with_evidence(user_q, ctx)
+            response_time = round(time.time() - start_time, 2)
+    
+        answer_text = ans.get("answer", "")
+        evidence_text = ans.get("evidence", "")
+
+    with st.chat_message("assistant"):
+        b1, b2 = st.columns([1, 3])
+        with b1:
+            st.success("✅ Grounded") if avg_score >= 0.25 else st.warning("⚠️ Low confidence")
+        with b2:
+            st.caption(f"Retrieval strength: {avg_score:.3f}")
+
+        st.markdown(answer_text)
+
+        if evidence_text.strip():
+            with st.expander("📌 Evidence (exact quotes)"):
+                st.markdown(evidence_text)
+
+        st.markdown("**Retrieved sources**")
+        for i, (h, s) in enumerate(zip(hits, scores), start=1):
+            with st.expander(f"Source {i} • score {s:.3f} • chunk #{h.chunk_id}"):
+                st.write(h.text[:2000])
+
+        st.markdown("---")
+        st.caption(f"⏱ Average response time: {response_time} sec")
+
+    st.session_state.chat.append({"role": "assistant", "content": answer_text})
+    st.session_state.qa_log.append({"question": user_q, "answer": answer_text, "evidence": evidence_text})
+
+    st.rerun()
+
 
     if st.session_state.single_rag is None:
         st.warning("Build the index first to enable chat.")
@@ -321,7 +382,6 @@ if mode == "Single Document":
             st.markdown(msg["content"])
 
     default_q = st.session_state.pop("_prefill_q", "")
-    user_q = st.chat_input("Ask something… (e.g., What does the image say?)")
     if default_q:
         user_q = default_q
 
@@ -494,6 +554,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
