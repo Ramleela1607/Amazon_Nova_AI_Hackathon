@@ -401,7 +401,7 @@ if mode == "Single Document":
     if default_q:
         user_q = default_q
 
-    if user_q:
+    if "pending_question" in st.session_state:
         st.session_state.chat.append({"role": "user", "content": user_q})
         with st.chat_message("user"):
             st.markdown(user_q)
@@ -570,6 +570,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
