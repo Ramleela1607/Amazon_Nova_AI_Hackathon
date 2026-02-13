@@ -1,3 +1,4 @@
+import re
 import json
 from typing import List, Dict, Any
 import boto3
@@ -17,6 +18,27 @@ NOVA_MM_EMBED_MODEL_ID = "amazon.nova-2-multimodal-embeddings-v1:0"
 
 def get_bedrock_runtime(region: str):
     return boto3.client("bedrock-runtime", region_name=region)
+
+
+def _strip_code_fences(s: str) -> str:
+    s = (s or "").strip()
+    # remove ```json ... ``` or ``` ... ```
+    if s.startswith("```"):
+        s = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", s)
+        s = re.sub(r"\s*```$", "", s)
+    return s.strip()
+
+def _extract_json_array(s: str) -> str:
+    """
+    Return the first JSON array substring found in s, e.g. [ ... ].
+    Raises ValueError if not found.
+    """
+    s = _strip_code_fences(s)
+    m = re.search(r"\[[\s\S]*\]", s)
+    if not m:
+        raise ValueError("No JSON array found")
+    return m.group(0)
+
 
 
 # -------------------------
@@ -474,4 +496,5 @@ Document excerpt:
         pass
 
     return []
+
 
