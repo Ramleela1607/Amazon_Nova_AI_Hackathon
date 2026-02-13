@@ -2,8 +2,7 @@ streamlit
 boto3
 botocore
 pypdf
+pillow
 faiss-cpu
 numpy
 reportlab
-pillow
-
