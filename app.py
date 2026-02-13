@@ -300,11 +300,12 @@ if mode == "Single Document":
             key="typed_q",
         )
     
+    index_ready = isinstance(st.session_state.get("single_rag", None), RagIndex)
+    
     with btn_col:
-        if st.button("Ask", type="primary", use_container_width=True):
+        if st.button("Ask", type="primary", use_container_width=True, disabled=not index_ready):
             q = typed_q.strip()
             if q:
-                # Store as a one-time pending job
                 st.session_state["pending_question"] = q
     
     # Consume prefill once
@@ -570,6 +571,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
