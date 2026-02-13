@@ -135,7 +135,7 @@ def make_pdf_report(filename: str, title: str, sections: list[tuple[str, str]]) 
 
 def reset_session():
     st.session_state["uploader_key"] = st.session_state.get("uploader_key", 0) + 1
-    st.session_state["q_key"] = st.session_state.get("q_key", 0) + 1  # resets question box too
+    st.session_state["q_key"] = st.session_state.get("q_key", 0) + 1
 
     for k in [
         "chat", "qa_log", "single_rag",
@@ -145,11 +145,37 @@ def reset_session():
         "auto_rag_settings",
         "suggested_questions",
         "suggest_fp",
+        "index_fp",
     ]:
         if k in st.session_state:
             del st.session_state[k]
 
     st.rerun()
+
+def build_index_if_needed(full_text: str, chunk_size: int, overlap: int):
+    """
+    Auto-build FAISS index if document/settings changed.
+    Stores:
+      - st.session_state.single_rag
+      - st.session_state.index_fp
+    """
+    if not full_text or len(full_text.strip()) < 10:
+        return
+
+    fp_src = f"{full_text[:25000]}||cs={chunk_size}||ov={overlap}"
+    new_fp = hashlib.md5(fp_src.encode("utf-8", errors="ignore")).hexdigest()
+
+    if st.session_state.get("index_fp") == new_fp and isinstance(st.session_state.get("single_rag"), RagIndex):
+        return  # already built for this doc/settings
+
+    chunks = chunk_text(full_text, chunk_size=chunk_size, overlap=overlap)
+    with st.spinner("🚀 Auto-building index (Nova embeddings → FAISS)..."):
+        rag = RagIndex(dim=1024)
+        rag.add_chunks(chunks)
+
+    st.session_state["single_rag"] = rag
+    st.session_state["index_fp"] = new_fp
+
 
 # ---------- Session init ----------
 if "chat" not in st.session_state:
@@ -194,7 +220,7 @@ if mode == "Single Document":
     user_text = st.text_area("✍️ Paste extra text / notes (optional)", height=100)
 
     if uploaded_pdf is None and uploaded_img is None and not user_text.strip():
-        st.info("Upload a PDF or Image (or paste text) → Build Index → Start chatting.")
+        st.info("Upload a PDF or Image (or paste text) → Index builds automatically → Start chatting.")
         st.stop()
 
     full_text_parts = []
@@ -204,12 +230,11 @@ if mode == "Single Document":
         pdf_text = extract_text_from_pdf(uploaded_pdf)
         full_text_parts.append("=== PDF TEXT ===\n" + pdf_text)
 
-    # Image -> text + insights (Nova multimodal)
+    # Image -> text + insights
     if uploaded_img is not None:
         img = Image.open(uploaded_img)
         st.image(img, caption="Uploaded image", use_container_width=True)
 
-        # Always convert to PNG bytes (fixes MIME mismatch)
         img_rgb = Image.open(uploaded_img).convert("RGB")
         buf = io.BytesIO()
         img_rgb.save(buf, format="PNG")
@@ -249,21 +274,21 @@ if mode == "Single Document":
     # Doc fingerprint
     doc_fp = hashlib.md5(full_text[:20000].encode("utf-8", errors="ignore")).hexdigest()
 
-    # Auto RAG settings (cached per doc)
+    # Auto RAG settings cached per doc
     if st.session_state.get("last_doc_fp") != doc_fp:
         st.session_state["last_doc_fp"] = doc_fp
         with st.spinner("⚙️ Auto-tuning retrieval settings with Nova Lite..."):
             st.session_state["auto_rag_settings"] = recommend_rag_settings(full_text)
-        # reset suggestions when doc changes
-        if "suggested_questions" in st.session_state:
-            del st.session_state["suggested_questions"]
-        if "suggest_fp" in st.session_state:
-            del st.session_state["suggest_fp"]
+
+        # reset suggestion cache for new doc
+        for k2 in ["suggested_questions", "suggest_fp"]:
+            if k2 in st.session_state:
+                del st.session_state[k2]
 
     rec = st.session_state.get("auto_rag_settings", {"chunk_size": 1000, "overlap": 150, "top_k": 4})
     auto_chunk_size, auto_overlap, auto_top_k = rec["chunk_size"], rec["overlap"], rec["top_k"]
 
-    # Sidebar: retrieval settings (AUTO + optional manual adjust)
+    # Sidebar: retrieval controls (auto default)
     st.sidebar.subheader("🔎 Retrieval settings")
     use_auto = st.sidebar.toggle("Use Nova auto-optimized settings", value=True)
 
@@ -275,32 +300,22 @@ if mode == "Single Document":
         overlap = st.sidebar.slider("Overlap (chars)", 0, 400, int(auto_overlap), 25)
         top_k = st.sidebar.slider("Top-K sources", 2, 8, int(auto_top_k), 1)
 
-    chunks = chunk_text(full_text, chunk_size=chunk_size, overlap=overlap)
+    # Optional manual rebuild button
+    if st.sidebar.button("♻️ Rebuild index now", use_container_width=True):
+        st.session_state.pop("index_fp", None)  # force rebuild next call
 
-    # Metrics (keep clean, no retrieval settings panel here)
+    # ✅ AUTO BUILD INDEX HERE
+    build_index_if_needed(full_text, chunk_size=chunk_size, overlap=overlap)
+
+    # Metrics
+    chunks_preview = chunk_text(full_text, chunk_size=chunk_size, overlap=overlap)
     c1, c2, c3 = st.columns(3)
-    c1.metric("Chunks", len(chunks))
+    c1.metric("Chunks", len(chunks_preview))
     c2.metric("Top-K", top_k)
     c3.metric("Mode", "Single")
 
     with st.expander("📄 Combined text preview", expanded=False):
         st.text_area("Preview", full_text[:8000], height=240)
-
-    # Index
-    st.subheader("1) Index the document")
-    if "single_rag" not in st.session_state:
-        st.session_state.single_rag = None
-
-    a, b = st.columns([1, 1])
-    with a:
-        if st.button("🚀 Build Index (Nova embeddings → FAISS)", type="primary", use_container_width=True):
-            with st.spinner("Building index..."):
-                rag = RagIndex(dim=1024)
-                rag.add_chunks(chunks)
-                st.session_state.single_rag = rag
-            st.success("Index ready ✅")
-    with b:
-        st.info("Once indexed, you can ask questions. Answers include evidence + sources.")
 
     st.divider()
 
@@ -314,7 +329,7 @@ if mode == "Single Document":
 
     st.divider()
 
-    # Suggested questions (dynamic per doc + interest)
+    # Suggested questions
     st.markdown("### ✨ Nova-suggested questions (auto from your document)")
     suggest_fp = f"{doc_fp}:{user_interest}"
 
@@ -341,38 +356,33 @@ if mode == "Single Document":
 
     st.divider()
 
-    # -------------------------------
-    # Chat (input stays HERE, not bottom)
-    # -------------------------------
+    # Chat
     st.subheader("3) Chat with your document")
 
     index_ready = isinstance(st.session_state.get("single_rag", None), RagIndex)
     if not index_ready:
-        st.warning("Build the index first to enable chat.")
+        st.error("Index did not build. Try uploading a richer doc/image or click Reset.")
         st.stop()
 
     if len(full_text.strip()) < 50:
         st.warning("Not enough text to chat. Upload a PDF or text-heavy image.")
         st.stop()
 
-    # Render history
     for msg in st.session_state.chat:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # ---- Ask box (FORM) so it stays in section 3 and clears safely
     st.markdown("#### 💬 Ask a question")
 
-    # If suggestion clicked
     if "pending_question" in st.session_state:
         q_to_ask = st.session_state.pop("pending_question")
     else:
-        q_to_ask = None
+        q_to_ask = ""
 
     with st.form(key=f"ask_form_{st.session_state['q_key']}", clear_on_submit=True):
         q = st.text_input(
             "Type your question",
-            value=q_to_ask or "",
+            value=q_to_ask,
             placeholder="e.g., What are the key results and what do they imply?",
             label_visibility="collapsed",
         )
@@ -416,7 +426,6 @@ if mode == "Single Document":
         st.session_state.chat.append({"role": "assistant", "content": answer_text})
         st.session_state.qa_log.append({"question": user_q, "answer": answer_text, "evidence": evidence_text})
 
-        # rotate form key so the input always appears cleared
         st.session_state["q_key"] += 1
         st.rerun()
 
@@ -472,7 +481,7 @@ else:
         up_b = st.file_uploader("Upload PDF (Doc B)", type=["pdf"], key=f"docB_{k}")
 
     if up_a is None or up_b is None:
-        st.info("Upload both PDFs → Build indexes → Ask a comparison question.")
+        st.info("Upload both PDFs → Index builds automatically → Ask a comparison question.")
         st.stop()
 
     text_a = extract_text_from_pdf(up_a)
@@ -483,9 +492,9 @@ else:
 
     chunk_size, overlap, top_k = rec["chunk_size"], rec["overlap"], rec["top_k"]
 
-    # Sidebar adjustment toggle
     st.sidebar.subheader("🔎 Retrieval settings")
     use_auto = st.sidebar.toggle("Use Nova auto-optimized settings", value=True, key="use_auto_compare")
+
     if not use_auto:
         chunk_size = st.sidebar.slider("Chunk size (chars)", 300, 2000, int(chunk_size), 50, key="cs_compare")
         overlap = st.sidebar.slider("Overlap (chars)", 0, 400, int(overlap), 25, key="ov_compare")
@@ -496,31 +505,24 @@ else:
     chunks_a = chunk_text(text_a, chunk_size=chunk_size, overlap=overlap)
     chunks_b = chunk_text(text_b, chunk_size=chunk_size, overlap=overlap)
 
+    # AUTO-build indexes in compare mode
+    if st.session_state.get("compare_fp") != hashlib.md5((text_a[:12000] + text_b[:12000] + str(chunk_size) + str(overlap)).encode("utf-8", errors="ignore")).hexdigest():
+        st.session_state["compare_fp"] = hashlib.md5((text_a[:12000] + text_b[:12000] + str(chunk_size) + str(overlap)).encode("utf-8", errors="ignore")).hexdigest()
+        with st.spinner("🚀 Auto-building indexes for Doc A & Doc B..."):
+            rag_a = RagIndex(dim=1024)
+            rag_a.add_chunks(chunks_a)
+            rag_b = RagIndex(dim=1024)
+            rag_b.add_chunks(chunks_b)
+        st.session_state["rag_a"] = rag_a
+        st.session_state["rag_b"] = rag_b
+
     m1, m2, m3 = st.columns(3)
     m1.metric("Doc A chunks", len(chunks_a))
     m2.metric("Doc B chunks", len(chunks_b))
     m3.metric("Top-K", top_k)
 
-    if "rag_a" not in st.session_state:
-        st.session_state.rag_a = None
-    if "rag_b" not in st.session_state:
-        st.session_state.rag_b = None
-
-    st.subheader("1) Build indexes for both documents")
-    if st.button("🚀 Build indexes A & B", type="primary", use_container_width=True):
-        with st.spinner("Building index A..."):
-            rag_a = RagIndex(dim=1024)
-            rag_a.add_chunks(chunks_a)
-        with st.spinner("Building index B..."):
-            rag_b = RagIndex(dim=1024)
-            rag_b.add_chunks(chunks_b)
-
-        st.session_state.rag_a = rag_a
-        st.session_state.rag_b = rag_b
-        st.success("Both indexes ready ✅")
-
     if not isinstance(st.session_state.get("rag_a", None), RagIndex) or not isinstance(st.session_state.get("rag_b", None), RagIndex):
-        st.warning("Build indexes first.")
+        st.error("Indexes not ready.")
         st.stop()
 
     st.divider()
