@@ -332,6 +332,60 @@ if mode == "Single Document":
 
     # ✅ Chat section (NO accumulating outputs)
     st.subheader("3) Chat with your document")
+    st.markdown("#### 💬 Ask a question")
+    # ---------------- Chat Input (INLINE, NOT bottom pinned) ----------------
+    input_col, button_col = st.columns([5, 1])
+    
+    with input_col:
+        user_q = st.text_input(
+            "Type your question",
+            placeholder="e.g., What are the key findings and their implications?",
+            label_visibility="collapsed",
+            key="inline_chat_input"
+        )
+    
+    with button_col:
+        ask_clicked = st.button("Ask", type="primary", use_container_width=True)
+    
+    if ask_clicked and user_q.strip():
+    
+        # Clear previous chat (you said you don't want accumulation)
+        st.session_state.chat = []
+    
+        rag = st.session_state.get("single_rag", None)
+        if not isinstance(rag, RagIndex):
+            st.error("Index not ready. Click **Build Index** first.")
+            st.stop()
+    
+        # Show user message
+        st.session_state.chat.append({"role": "user", "content": user_q})
+        with st.chat_message("user"):
+            st.markdown(user_q)
+    
+        # Retrieve
+        with st.spinner("Retrieving sources..."):
+            hits, scores = rag.search(user_q, k=top_k)
+            ctx = [h.text for h in hits]
+    
+        # Answer
+        with st.spinner("Thinking with Nova Lite..."):
+            start_time = time.time()
+            ans = ask_with_evidence(user_q, ctx)
+            response_time = round(time.time() - start_time, 2)
+    
+        answer_text = ans.get("answer", "").strip()
+        evidence_text = ans.get("evidence", "").strip()
+    
+        with st.chat_message("assistant"):
+            st.markdown(answer_text if answer_text else "I don't know based on the document.")
+    
+            if evidence_text:
+                with st.expander("📌 Evidence"):
+                    st.markdown(evidence_text)
+    
+            st.markdown("---")
+            st.caption(f"⏱ Average response time: {response_time} sec")
+
 
     rag = st.session_state.get("single_rag", None)
     if not isinstance(rag, RagIndex):
@@ -481,5 +535,6 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
