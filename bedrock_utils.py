@@ -439,13 +439,7 @@ Document excerpt:
     except Exception:
         pass
 
-    return [
-        "Summarize the document in 3 bullets.",
-        "What are the key numbers or metrics?",
-        "What risks or issues are present?",
-        "What are recommended next steps?",
-        "What information is missing or unclear?",
-        "What is the main purpose here?",
-    ][:n]
+    return []
+
 
 
