@@ -224,8 +224,12 @@ if mode == "Single Document":
         img = Image.open(uploaded_img)
         st.image(img, caption="Uploaded image", use_container_width=True)
 
-        img_bytes = uploaded_img.getvalue()
-        img_fmt = uploaded_img.type.split("/")[-1] if uploaded_img.type else "png"
+        # Always convert to PNG bytes (fixes MIME mismatch permanently)
+        img = Image.open(uploaded_img).convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        img_bytes = buf.getvalue()
+        img_fmt = "png"
         img_fmt = img_fmt.lower()
         if img_fmt == "jpg":
             img_fmt = "jpeg"
@@ -575,4 +579,5 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
