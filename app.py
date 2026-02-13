@@ -173,6 +173,62 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150):
         start += max(1, chunk_size - overlap)
     return chunks
 
+def extract_dates_with_events(text: str, max_items: int = 60):
+    """
+    Find dates in text and capture meaningful 'event' words before each date.
+    Returns list of dicts: [{"label": event, "value": date}]
+    """
+
+    if not text:
+        return []
+
+    # common date formats
+    date_patterns = [
+        r"\b\d{4}-\d{2}-\d{2}\b",                                   # 2024-05-12
+        r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",                       # 12/05/2024 or 12-5-24
+        r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}\b",  # May 12, 2024
+        r"\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{4}\b",     # 12 May 2024
+    ]
+
+    date_re = re.compile("|".join(date_patterns), re.IGNORECASE)
+
+    results = []
+    seen = set()
+
+    for m in date_re.finditer(text):
+        date_str = m.group(0).strip()
+
+        # Look back a window for event text
+        left = max(0, m.start() - 120)
+        context_left = text[left:m.start()]
+
+        # event = take last "phrase-like" chunk before date
+        # split by punctuation/newline to get the closest meaningful clause
+        parts = re.split(r"[\n\r\.;:•\-–—]+", context_left)
+        event = (parts[-1] if parts else "").strip()
+
+        # shrink to last N words if too long
+        words = event.split()
+        if len(words) > 12:
+            event = " ".join(words[-12:])
+
+        # fallback if empty
+        if not event:
+            event = "Date mentioned"
+
+        # de-dup
+        key = (event.lower(), date_str.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+
+        results.append({"label": event, "value": date_str})
+
+        if len(results) >= max_items:
+            break
+
+    return results
+
 def try_parse_number(value: str):
     if value is None:
         return None
@@ -620,60 +676,5 @@ else:
         st.write(out)
 
 
-def extract_dates_with_events(text: str, max_items: int = 60):
-    """
-    Find dates in text and capture meaningful 'event' words before each date.
-    Returns list of dicts: [{"label": event, "value": date}]
-    """
-
-    if not text:
-        return []
-
-    # common date formats
-    date_patterns = [
-        r"\b\d{4}-\d{2}-\d{2}\b",                                   # 2024-05-12
-        r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",                       # 12/05/2024 or 12-5-24
-        r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}\b",  # May 12, 2024
-        r"\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{4}\b",     # 12 May 2024
-    ]
-
-    date_re = re.compile("|".join(date_patterns), re.IGNORECASE)
-
-    results = []
-    seen = set()
-
-    for m in date_re.finditer(text):
-        date_str = m.group(0).strip()
-
-        # Look back a window for event text
-        left = max(0, m.start() - 120)
-        context_left = text[left:m.start()]
-
-        # event = take last "phrase-like" chunk before date
-        # split by punctuation/newline to get the closest meaningful clause
-        parts = re.split(r"[\n\r\.;:•\-–—]+", context_left)
-        event = (parts[-1] if parts else "").strip()
-
-        # shrink to last N words if too long
-        words = event.split()
-        if len(words) > 12:
-            event = " ".join(words[-12:])
-
-        # fallback if empty
-        if not event:
-            event = "Date mentioned"
-
-        # de-dup
-        key = (event.lower(), date_str.lower())
-        if key in seen:
-            continue
-        seen.add(key)
-
-        results.append({"label": event, "value": date_str})
-
-        if len(results) >= max_items:
-            break
-
-    return results
 
 
