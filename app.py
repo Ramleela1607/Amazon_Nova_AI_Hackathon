@@ -14,6 +14,7 @@ from bedrock_utils import (
     DOC_TYPES,
     nova_image_to_text,
     nova_image_insights,
+    generate_report_title,
 )
 
 # ---------- Page ----------
@@ -465,5 +466,6 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
