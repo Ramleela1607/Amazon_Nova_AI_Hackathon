@@ -455,14 +455,13 @@ if mode == "Single Document":
         else:
             st.caption("No key numeric metrics detected for charting.")
 
-    if key_dates:
-        st.markdown("### 🗓️ Key Dates Timeline")
-        date_source = local_dates  # deterministic extraction
-        if date_source:
-            df_dates = pd.DataFrame(date_source).rename(columns={"label": "Event", "value": "Date"})
-            st.dataframe(df_dates, use_container_width=True)
-        else:
-            st.caption("No dates detected in the document.")
+    st.markdown("### 🗓️ Key Dates Timeline (AI Structured)")
+    date_source = local_dates  # deterministic extraction from full text
+    if date_source:
+        df_dates = pd.DataFrame(date_source).rename(columns={"label": "Event", "value": "Date"})
+        st.dataframe(df_dates, use_container_width=True)
+    else:
+        st.caption("No dates detected in the document.")
         
     if risks:
         st.markdown("### ⚠️ Risks")
@@ -674,6 +673,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
