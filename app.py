@@ -4,7 +4,8 @@ import hashlib
 import streamlit as st
 from pypdf import PdfReader
 from PIL import Image
-
+import pandas as pd
+import re
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
@@ -170,6 +171,23 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150):
             chunks.append(chunk)
         start += max(1, chunk_size - overlap)
     return chunks
+
+def try_parse_number(value: str):
+    """
+    Extract a usable numeric value from strings like "$12,340.50", "45%", "INR 1000".
+    Returns float or None.
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    s = s.replace(",", "")
+    m = re.search(r"(-?\d+(\.\d+)?)", s)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except Exception:
+        return None
 
 def make_pdf_report(filename: str, title: str, sections: list[tuple[str, str]]) -> bytes:
     styles = getSampleStyleSheet()
@@ -573,5 +591,6 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
