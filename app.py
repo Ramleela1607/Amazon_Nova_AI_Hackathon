@@ -173,21 +173,43 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150):
         start += max(1, chunk_size - overlap)
     return chunks
 
-def extract_dates_with_events(text: str, max_items: int = 60):
+def extract_dates_with_events(text: str, max_items: int = 80):
     """
-    Find dates in text and capture meaningful 'event' words before each date.
+    Robust date extraction from noisy PDF/OCR text.
     Returns list of dicts: [{"label": event, "value": date}]
+    - Finds many common date formats
+    - Handles line breaks/extra spaces
+    - Captures the closest meaningful phrase before the date as 'event'
     """
 
-    if not text:
+    if not text or not str(text).strip():
         return []
 
-    # common date formats
+    # --- Normalize text for OCR/PDF quirks ---
+    t = str(text)
+
+    # Join broken lines / excessive whitespace that breaks patterns
+    t = t.replace("\r", "\n")
+    t = re.sub(r"[ \t]+", " ", t)
+    t = re.sub(r"\n{2,}", "\n", t)
+
+    # Common OCR split like "12\nMay\n2024" -> "12 May 2024"
+    t = re.sub(r"(\d{1,2})\s*\n\s*([A-Za-z]{3,9})\s*\n\s*(\d{2,4})", r"\1 \2 \3", t)
+
+    # Remove ordinal suffixes: 12th -> 12
+    t = re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", t, flags=re.IGNORECASE)
+
+    # Month names
+    months = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*"
+
+    # --- Date patterns (more complete) ---
     date_patterns = [
-        r"\b\d{4}-\d{2}-\d{2}\b",                                   # 2024-05-12
-        r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",                       # 12/05/2024 or 12-5-24
-        r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}\b",  # May 12, 2024
-        r"\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{4}\b",     # 12 May 2024
+        r"\b\d{4}[/-]\d{1,2}[/-]\d{1,2}\b",                        # 2024-05-12 / 2024/5/12
+        r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",                      # 12/05/2024 or 12-5-24
+        rf"\b{months}\s+\d{{1,2}},?\s+\d{{2,4}}\b",                # May 12, 2024 / May 12 2024
+        rf"\b\d{{1,2}}\s+{months},?\s+\d{{2,4}}\b",                # 12 May 2024 / 12 May, 2024
+        rf"\b\d{{1,2}}-{months}-\d{{2,4}}\b",                      # 12-May-24 / 12-May-2024
+        rf"\b{months}-\d{{1,2}}-\d{{2,4}}\b",                      # May-12-2024
     ]
 
     date_re = re.compile("|".join(date_patterns), re.IGNORECASE)
@@ -195,39 +217,52 @@ def extract_dates_with_events(text: str, max_items: int = 60):
     results = []
     seen = set()
 
-    for m in date_re.finditer(text):
-        date_str = m.group(0).strip()
+    # Split into lines so we can pick better "event" context
+    lines = t.split("\n")
 
-        # Look back a window for event text
-        left = max(0, m.start() - 120)
-        context_left = text[left:m.start()]
-
-        # event = take last "phrase-like" chunk before date
-        # split by punctuation/newline to get the closest meaningful clause
-        parts = re.split(r"[\n\r\.;:•\-–—]+", context_left)
-        event = (parts[-1] if parts else "").strip()
-
-        # shrink to last N words if too long
-        words = event.split()
-        if len(words) > 12:
-            event = " ".join(words[-12:])
-
-        # fallback if empty
-        if not event:
-            event = "Date mentioned"
-
-        # de-dup
-        key = (event.lower(), date_str.lower())
-        if key in seen:
+    for line in lines:
+        line_stripped = line.strip()
+        if not line_stripped:
             continue
-        seen.add(key)
 
-        results.append({"label": event, "value": date_str})
+        for m in date_re.finditer(line_stripped):
+            date_str = m.group(0).strip()
+
+            # Event = text before the date in the same line
+            event = line_stripped[:m.start()].strip()
+
+            # If empty, try some words after the date too (sometimes "Due: 12 May 2024")
+            if not event:
+                after = line_stripped[m.end():].strip()
+                if after:
+                    event = after
+
+            # Clean event
+            event = re.sub(r"\s+", " ", event)
+            event = event.strip(" -–—:•;|")
+
+            # Reduce very long event text to last 10-14 words
+            words = event.split()
+            if len(words) > 14:
+                event = " ".join(words[-14:])
+
+            if not event:
+                event = "Date mentioned"
+
+            key = (event.lower(), date_str.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+
+            results.append({"label": event, "value": date_str})
+            if len(results) >= max_items:
+                break
 
         if len(results) >= max_items:
             break
 
     return results
+
 
 def try_parse_number(value: str):
     if value is None:
@@ -673,6 +708,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
