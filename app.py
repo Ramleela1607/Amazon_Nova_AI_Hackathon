@@ -433,6 +433,14 @@ else:
 
     text_a = extract_text_from_pdf(up_a)
     text_b = extract_text_from_pdf(up_b)
+    
+    #🔧 Auto RAG tuning for comparison mode
+    with st.spinner("⚙️ Auto-tuning RAG settings with Nova Lite..."):
+        rec = recommend_rag_settings(text_a + "\n\n" + text_b)
+    
+    chunk_size = rec["chunk_size"]
+    overlap = rec["overlap"]
+    top_k = rec["top_k"]
 
     chunks_a = chunk_text(text_a, chunk_size=chunk_size, overlap=overlap)
     chunks_b = chunk_text(text_b, chunk_size=chunk_size, overlap=overlap)
@@ -486,6 +494,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
