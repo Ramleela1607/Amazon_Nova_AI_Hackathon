@@ -6,6 +6,7 @@ from pypdf import PdfReader
 from PIL import Image
 import pandas as pd
 import re
+
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
@@ -19,8 +20,8 @@ from bedrock_utils import (
     compare_docs,
     DOC_TYPES,
     recommend_rag_settings,
-    nova_image_to_text,          
-    nova_image_insights_brief,    
+    nova_image_to_text,
+    nova_image_insights_brief,
     generate_report_title,
     suggest_questions,
     generate_dashboard_insights,
@@ -173,14 +174,9 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150):
     return chunks
 
 def try_parse_number(value: str):
-    """
-    Extract a usable numeric value from strings like "$12,340.50", "45%", "INR 1000".
-    Returns float or None.
-    """
     if value is None:
         return None
-    s = str(value).strip()
-    s = s.replace(",", "")
+    s = str(value).strip().replace(",", "")
     m = re.search(r"(-?\d+(\.\d+)?)", s)
     if not m:
         return None
@@ -220,6 +216,10 @@ def reset_session():
         "pending_question",
     ]:
         st.session_state.pop(k, None)
+    # also clear dashboard cache for safety
+    for k in list(st.session_state.keys()):
+        if str(k).startswith("dashboard:") or str(k).startswith("img_insights:"):
+            st.session_state.pop(k, None)
     st.rerun()
 
 def build_index_if_needed(full_text: str, chunk_size: int, overlap: int):
@@ -241,7 +241,6 @@ def build_index_if_needed(full_text: str, chunk_size: int, overlap: int):
     st.session_state["index_fp"] = new_fp
 
 def run_single_question(user_q: str, top_k: int):
-    """Run a single question and store ONLY latest result (no chat accumulation)."""
     rag = st.session_state.get("single_rag", None)
     if not isinstance(rag, RagIndex):
         st.error("Index not ready. Rebuild from sidebar or Reset.")
@@ -261,7 +260,6 @@ def run_single_question(user_q: str, top_k: int):
     st.session_state["latest_evidence"] = (ans.get("evidence") or "").strip()
     st.session_state["latest_sources"] = list(zip(hits, scores))
     st.session_state["latest_rt"] = rt
-
 
 # ---------- Session init ----------
 st.session_state.setdefault("uploader_key", 0)
@@ -301,7 +299,7 @@ if mode == "Single Document":
         pdf_text = extract_text_from_pdf(uploaded_pdf)
         full_text_parts.append("=== PDF TEXT ===\n" + pdf_text)
 
-    # Image: cache insights + internal OCR
+    # Image: cache insights + internal OCR (not shown)
     if uploaded_img is not None:
         img_rgb = Image.open(uploaded_img).convert("RGB")
         buf = io.BytesIO()
@@ -337,24 +335,27 @@ if mode == "Single Document":
         full_text_parts.append("=== USER NOTES ===\n" + user_text.strip())
 
     full_text = "\n\n".join(full_text_parts)
+
+    # ✅ IMPORTANT: compute doc_fp BEFORE dashboard / caching
+    doc_fp = hashlib.md5(full_text[:20000].encode("utf-8", errors="ignore")).hexdigest()
+
     # ========================
     # 📊 Executive Dashboard
     # ========================
     st.subheader("📊 Executive Dashboard")
     dash_key = f"dashboard:{doc_fp}"
-    
-    # Refresh button (forces re-run for dashboard only)
+
     dcol1, dcol2 = st.columns([1, 5])
     with dcol1:
         if st.button("🔄 Refresh Dashboard", use_container_width=True):
             st.session_state.pop(dash_key, None)
-    
+
     if dash_key not in st.session_state:
         with st.spinner("Analyzing document for dashboard insights..."):
             st.session_state[dash_key] = generate_dashboard_insights(full_text)
-    
+
     dashboard = st.session_state.get(dash_key, {}) or {}
-    
+
     summary = dashboard.get("summary", "")
     doc_type_guess = dashboard.get("doc_type_guess", "generic")
     risk_score = int(dashboard.get("risk_score", 0) or 0)
@@ -362,23 +363,18 @@ if mode == "Single Document":
     key_dates = dashboard.get("key_dates", []) or []
     risks = dashboard.get("risks", []) or []
     next_actions = dashboard.get("next_actions", []) or []
-    
-    # --- Top Row: Type + Risk
+
     c1, c2, c3 = st.columns(3)
     c1.metric("Doc Type (Nova)", str(doc_type_guess))
     c2.metric("Risk Score", f"{risk_score}/100")
-    
-    # Risk meter
     with c3:
         st.caption("Risk Meter")
         st.progress(min(max(risk_score, 0), 100))
-    
-    # --- Summary
+
     if summary.strip():
         st.markdown("### 🧾 Executive Summary")
         st.markdown(summary)
-    
-    # --- Key Numbers → Chart
+
     numeric_rows = []
     for it in key_numbers:
         label = (it or {}).get("label", "").strip()
@@ -386,12 +382,11 @@ if mode == "Single Document":
         num = try_parse_number(val)
         if label and num is not None:
             numeric_rows.append({"label": label, "value": num, "raw": str(val)})
-    
+
     if numeric_rows:
         st.markdown("### 📈 Key Numbers (Chart)")
         df = pd.DataFrame(numeric_rows).sort_values("value", ascending=False)
         st.bar_chart(df.set_index("label")[["value"]])
-    
         with st.expander("Numbers (raw)", expanded=False):
             st.dataframe(df[["label", "raw"]], use_container_width=True)
     else:
@@ -401,29 +396,23 @@ if mode == "Single Document":
                 st.markdown(f"- **{it.get('label','Metric')}**: {it.get('value','-')}")
         else:
             st.caption("No key numeric metrics detected for charting.")
-    
-    # --- Key Dates Timeline
+
     if key_dates:
         st.markdown("### 🗓️ Key Dates Timeline")
-        df_dates = pd.DataFrame(key_dates)
-        df_dates = df_dates.rename(columns={"label": "Event", "value": "Date"})
+        df_dates = pd.DataFrame(key_dates).rename(columns={"label": "Event", "value": "Date"})
         st.dataframe(df_dates, use_container_width=True)
-    
-    # --- Risks + Actions
+
     if risks:
         st.markdown("### ⚠️ Risks")
         for r in risks[:6]:
             st.markdown(f"- {r}")
-    
+
     if next_actions:
         st.markdown("### ✅ Next Actions")
         for a in next_actions[:6]:
             st.markdown(f"- {a}")
-    
+
     st.divider()
-
-
-    doc_fp = hashlib.md5(full_text[:20000].encode("utf-8", errors="ignore")).hexdigest()
 
     # Auto settings per doc
     if st.session_state.get("last_doc_fp") != doc_fp:
@@ -477,13 +466,12 @@ if mode == "Single Document":
             st.session_state["suggested_questions"] = suggest_questions(full_text, user_interest=user_interest, n=6)
 
     qs = st.session_state.get("suggested_questions", [])
-
     if qs:
         cols = st.columns(3)
         for i, q in enumerate(qs):
             with cols[i % 3]:
                 if st.button(q, use_container_width=True, key=f"dynq_{doc_fp}_{i}"):
-                    # auto-run immediately
+                    # run immediately
                     st.session_state["pending_question"] = q
                     st.rerun()
     else:
@@ -500,12 +488,12 @@ if mode == "Single Document":
     st.subheader("3) Chat with your document")
     st.markdown("#### 💬 Ask a question")
 
-    # If suggestion clicked, it runs automatically
+    # If suggestion clicked, run it automatically (no accumulation)
     pending = st.session_state.pop("pending_question", "")
     if pending:
         run_single_question(pending, top_k=top_k)
 
-    # Manual input (stays inline here, NOT bottom)
+    # Manual input (inline here; not bottom pinned)
     with st.form("ask_form", clear_on_submit=True):
         q_text = st.text_input(
             "Type your question",
@@ -624,7 +612,3 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
-
-
-
-
