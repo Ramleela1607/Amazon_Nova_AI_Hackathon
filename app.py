@@ -237,6 +237,11 @@ if mode == "Single Document":
     chunk_size = rec["chunk_size"]
     overlap = rec["overlap"]
     top_k = rec["top_k"]
+    st.subheader("⚙️ Auto-Optimized Retrieval Settings (Nova Lite)")
+    s1, s2, s3 = st.columns(3)
+    s1.metric("Auto chunk size", chunk_size)
+    s2.metric("Auto overlap", overlap)
+    s3.metric("Auto Top-K", top_k)
 
     chunks = chunk_text(full_text, chunk_size=chunk_size, overlap=overlap)
 
@@ -487,6 +492,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
