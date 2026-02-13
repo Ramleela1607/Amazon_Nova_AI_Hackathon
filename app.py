@@ -342,26 +342,44 @@ if mode == "Single Document":
     
         # Assistant bubble
         with st.chat_message("assistant"):
-            b1, b2 = st.columns([1, 3])
+        
+            # --- Confidence Badge ---
+            b1, b2 = st.columns([1.2, 3.8])
+        
             with b1:
-                if avg_score >= 0.25:
-                    st.success("✅ Grounded")
-                else:
-                    st.warning("⚠️ Low confidence")
+                label = "✅ Grounded" if avg_score >= 0.25 else "⚠️ Low confidence"
+                bg = "#DCFCE7" if avg_score >= 0.25 else "#FEF3C7"
+                fg = "#166534" if avg_score >= 0.25 else "#92400E"
+                border = "#86EFAC" if avg_score >= 0.25 else "#FCD34D"
+        
+                st.markdown(
+                    f"""
+                    <div style="
+                        display:inline-block;
+                        padding:6px 10px;
+                        border-radius:999px;
+                        border:1px solid {border};
+                        background:{bg};
+                        color:{fg};
+                        font-weight:700;
+                        font-size:12px;">
+                        {label}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+        
             with b2:
                 st.caption(f"Retrieval strength: {avg_score:.3f}")
-    
-            st.markdown(answer_text if answer_text else "I don't know based on the document.")
-    
-            if evidence_text:
+        
+            # --- Answer ---
+            st.markdown(answer_text)
+        
+            # --- Evidence ---
+            if evidence_text.strip():
                 with st.expander("📌 Evidence (exact quotes)"):
                     st.markdown(evidence_text)
-    
-            st.markdown("**Retrieved sources**")
-            for i, (h, s) in enumerate(zip(hits, scores), start=1):
-                with st.expander(f"Source {i} • score {s:.3f} • chunk #{h.chunk_id}"):
-                    st.write(h.text[:2000])
-    
+        
             st.markdown("---")
             st.caption(f"⏱ Average response time: {response_time} sec")
     
@@ -578,6 +596,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
