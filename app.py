@@ -18,10 +18,11 @@ from bedrock_utils import (
     compare_docs,
     DOC_TYPES,
     recommend_rag_settings,
-    nova_image_to_text,           # internal only
-    nova_image_insights_brief,    # brief only (2 lines)
+    nova_image_to_text,          
+    nova_image_insights_brief,    
     generate_report_title,
     suggest_questions,
+    generate_dashboard_insights,
 )
 
 # ---------- Page ----------
@@ -519,3 +520,4 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
