@@ -113,26 +113,34 @@ def nova_image_to_text(image_bytes: bytes, image_format: str = "png") -> str:
 
 def nova_image_insights_brief(image_bytes: bytes, image_format: str = "png") -> str:
     """
-    Return ONLY:
+    Return STRICTLY 2 lines:
+
     What it is:
     One useful insight (implication / issue / next step):
-
-    No extra bullets. No key fields. No numbers list. No fluff.
     """
+
     brt = get_bedrock_runtime(GEN_REGION)
 
     prompt = """
 You are Smart Document Copilot.
 
-Analyze the image and respond in EXACTLY this format (2 lines total):
+Carefully analyze the image.
 
-What it is: <one short line>
-One useful insight (implication / issue / next step): <one short line>
+Respond in EXACTLY this format (2 lines total):
 
-Rules:
-- Keep each line short.
-- Do NOT add extra lines or bullets.
+What it is: <document type + 1-2 specific visible identifiers such as invoice number, total amount, due date, company name>
+One useful insight (implication / issue / next step): <clear, practical, risk-aware insight>
+
+STRICT RULES:
+- MUST include at least one EXACT visible value (number, amount, date, or ID).
+- If it is an invoice, include the total amount.
+- If financial details exist, mention verification or payment risk.
+- Keep each line under 30 words.
+- No bullets.
+- No extra lines.
+- No extra commentary.
 - Do NOT invent data.
+- If text is unclear, say what is confidently visible.
 """.strip()
 
     msg = [
@@ -148,9 +156,15 @@ Rules:
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=msg,
-        inferenceConfig={"maxTokens": 140, "temperature": 0.2, "topP": 0.9},
+        inferenceConfig={
+            "maxTokens": 150,
+            "temperature": 0.15,   # Lower = more factual
+            "topP": 0.9
+        },
     )
+
     return resp["output"]["message"]["content"][0]["text"].strip()
+
 
 
 # -------------------------
@@ -460,3 +474,4 @@ Document excerpt:
         pass
 
     return []
+
