@@ -386,66 +386,74 @@ if mode == "Single Document":
     # Chat (INLINE input)
     st.subheader("3) Chat with your document")
     st.markdown("#### 💬 Ask a question")
-
-    rag = st.session_state.get("single_rag", None)
-    if not isinstance(rag, RagIndex):
-        st.error("Index not ready. Click **Rebuild index now** in the sidebar or Reset.")
-        st.stop()
-
-    if len(full_text.strip()) < 50:
-        st.warning("Not enough text to chat. Upload a PDF or a text-heavy image.")
-        st.stop()
-
-    # If user clicked suggestion, run it immediately
-    suggested_q = st.session_state.pop("pending_question", "")
-
-    input_col, button_col = st.columns([5, 1])
-    with input_col:
-        user_q = st.text_input(
-            "Type your question",
-            value=suggested_q,
-            placeholder="e.g., What are the key findings and implications?",
+    
+    # Inline input + Ask button (NOT chat_input)
+    c1, c2 = st.columns([5, 1])
+    
+    with c1:
+        # IMPORTANT: do NOT pass value= when using key
+        user_q_typed = st.text_input(
+            "Ask",
+            placeholder="e.g., What is the invoice total and due date?",
             label_visibility="collapsed",
             key="inline_chat_input",
         )
-    with button_col:
+    
+    with c2:
         ask_clicked = st.button("Ask", type="primary", use_container_width=True)
-
-    if ask_clicked and user_q.strip():
-        q = user_q.strip()
-
-        # Do NOT accumulate previous outputs: overwrite latest result only
-        st.session_state["latest_q"] = q
-
+    
+    # Decide question to run:
+    # 1) if suggestion click set pending_question -> run that immediately
+    # 2) else if user clicked Ask -> run typed input
+    user_q = None
+    if "pending_question" in st.session_state:
+        user_q = st.session_state.pop("pending_question")
+    elif ask_clicked and user_q_typed.strip():
+        user_q = user_q_typed.strip()
+    
+    if user_q:
+        rag = st.session_state.get("single_rag", None)
+        if not isinstance(rag, RagIndex):
+            st.error("Index not ready. Try 'Rebuild index now' in the sidebar.")
+            st.stop()
+    
+        # Clear previous output (you asked: do not accumulate)
+        st.session_state["latest_q"] = user_q
+        st.session_state["latest_answer"] = ""
+        st.session_state["latest_evidence"] = ""
+        st.session_state["latest_sources"] = []
+        st.session_state["latest_rt"] = 0.0
+    
         with st.spinner("Retrieving sources..."):
-            hits, scores = rag.search(q, k=top_k)
+            hits, scores = rag.search(user_q, k=top_k)
             ctx = [h.text for h in hits]
-
+    
         with st.spinner("Thinking with Nova Lite..."):
             start_time = time.time()
-            ans = ask_with_evidence(q, ctx)
+            ans = ask_with_evidence(user_q, ctx)
             response_time = round(time.time() - start_time, 2)
-
+    
         st.session_state["latest_answer"] = (ans.get("answer", "") or "").strip() or "I don't know based on the document."
         st.session_state["latest_evidence"] = (ans.get("evidence", "") or "").strip()
         st.session_state["latest_sources"] = list(zip(hits, scores))
         st.session_state["latest_rt"] = response_time
-
-        # Clear the input box without touching session_state widget key directly
+    
+        # OPTIONAL: clear the input after run
+        st.session_state["inline_chat_input"] = ""
         st.rerun()
-
-    # Render ONLY latest answer (replaces previous)
+    
+    # Render ONLY latest output (no accumulation)
     if st.session_state.get("latest_answer"):
         st.markdown("### ✅ Latest Answer")
         st.markdown(f"**Question:** {st.session_state.get('latest_q','')}")
-        st.markdown(st.session_state.get("latest_answer", ""))
-
-        ev = st.session_state.get("latest_evidence", "")
-        if ev:
-            with st.expander("📌 Evidence (exact quotes)"):
-                st.markdown(ev)
-
+        st.markdown(st.session_state["latest_answer"])
+    
+        if st.session_state.get("latest_evidence"):
+            with st.expander("📌 Evidence"):
+                st.markdown(st.session_state["latest_evidence"])
+    
         st.caption(f"⏱ Average response time: {st.session_state.get('latest_rt', 0)} sec")
+
 
     st.divider()
 
@@ -541,4 +549,5 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
