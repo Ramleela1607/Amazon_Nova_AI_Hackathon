@@ -304,48 +304,62 @@ if mode == "Single Document":
         del st.session_state["_prefill_q"]
     
     if ask_clicked and user_q.strip():
+        # --- user bubble ---
         st.session_state.chat.append({"role": "user", "content": user_q})
         with st.chat_message("user"):
             st.markdown(user_q)
     
+        # --- retrieval ---
         with st.spinner("Retrieving sources..."):
             hits, scores = st.session_state.single_rag.search(user_q, k=top_k)
             ctx = [h.text for h in hits]
-            avg_score = (sum(scores) / len(scores)) if scores else 0.0
     
+            # IMPORTANT: always define avg_score
+            if scores and len(scores) > 0:
+                avg_score = sum(scores) / len(scores)
+            else:
+                avg_score = 0.0
+    
+        # --- answer ---
         with st.spinner("Thinking with Nova Lite..."):
             start_time = time.time()
             ans = ask_with_evidence(user_q, ctx)
             response_time = round(time.time() - start_time, 2)
     
-        answer_text = ans.get("answer", "")
-        evidence_text = ans.get("evidence", "")
+        answer_text = ans.get("answer", "").strip()
+        evidence_text = ans.get("evidence", "").strip()
+    
+        # --- assistant bubble ---
+        with st.chat_message("assistant"):
+            b1, b2 = st.columns([1, 3])
+            with b1:
+                if avg_score >= 0.25:
+                    st.success("✅ Grounded")
+                else:
+                    st.warning("⚠️ Low confidence")
+            with b2:
+                st.caption(f"Retrieval strength: {avg_score:.3f}")
+    
+            st.markdown(answer_text if answer_text else "I don't know based on the document.")
+    
+            if evidence_text:
+                with st.expander("📌 Evidence (exact quotes)"):
+                    st.markdown(evidence_text)
+    
+            st.markdown("**Retrieved sources**")
+            for i, (h, s) in enumerate(zip(hits, scores), start=1):
+                with st.expander(f"Source {i} • score {s:.3f} • chunk #{h.chunk_id}"):
+                    st.write(h.text[:2000])
+    
+            st.markdown("---")
+            st.caption(f"⏱ Average response time: {response_time} sec")
+    
+        # --- store logs ---
+        st.session_state.chat.append({"role": "assistant", "content": answer_text})
+        st.session_state.qa_log.append({"question": user_q, "answer": answer_text, "evidence": evidence_text})
+    
+        st.rerun()
 
-    with st.chat_message("assistant"):
-        b1, b2 = st.columns([1, 3])
-        with b1:
-            st.success("✅ Grounded") if avg_score >= 0.25 else st.warning("⚠️ Low confidence")
-        with b2:
-            st.caption(f"Retrieval strength: {avg_score:.3f}")
-
-        st.markdown(answer_text)
-
-        if evidence_text.strip():
-            with st.expander("📌 Evidence (exact quotes)"):
-                st.markdown(evidence_text)
-
-        st.markdown("**Retrieved sources**")
-        for i, (h, s) in enumerate(zip(hits, scores), start=1):
-            with st.expander(f"Source {i} • score {s:.3f} • chunk #{h.chunk_id}"):
-                st.write(h.text[:2000])
-
-        st.markdown("---")
-        st.caption(f"⏱ Average response time: {response_time} sec")
-
-    st.session_state.chat.append({"role": "assistant", "content": answer_text})
-    st.session_state.qa_log.append({"question": user_q, "answer": answer_text, "evidence": evidence_text})
-
-    st.rerun()
 
 
     if st.session_state.single_rag is None:
@@ -554,6 +568,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
