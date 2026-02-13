@@ -399,8 +399,25 @@ if mode == "Single Document":
 
     if key_dates:
         st.markdown("### 🗓️ Key Dates Timeline")
-        df_dates = pd.DataFrame(key_dates).rename(columns={"label": "Event", "value": "Date"})
-        st.dataframe(df_dates, use_container_width=True)
+    
+        df_dates = pd.DataFrame(key_dates)
+    
+        if "label" in df_dates.columns and "value" in df_dates.columns:
+            df_dates = df_dates.rename(columns={"label": "Event", "value": "Date"})
+    
+            # Sort if dates look sortable
+            try:
+                df_dates["_parsed"] = pd.to_datetime(df_dates["Date"], errors="coerce")
+                df_dates = df_dates.sort_values("_parsed")
+                df_dates = df_dates.drop(columns=["_parsed"])
+            except Exception:
+                pass
+    
+            st.dataframe(df_dates, use_container_width=True)
+        else:
+            st.caption("Nova returned dates but format was unexpected.")
+    else:
+        st.caption("No key timeline events detected.")
 
     if risks:
         st.markdown("### ⚠️ Risks")
@@ -612,3 +629,4 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
