@@ -1,8 +1,8 @@
-import io
 import time
 import streamlit as st
 from pypdf import PdfReader
 from PIL import Image
+
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
@@ -14,17 +14,17 @@ from bedrock_utils import (
     detect_doc_type,
     compare_docs,
     DOC_TYPES,
+    textract_image_to_text,
 )
 
 # ---------- Page ----------
 st.set_page_config(page_title="Smart Document Copilot", layout="wide")
 
-# ---------- Premium UI (background + cards) ----------
+# ---------- Premium UI (light background image) ----------
 st.markdown("""
 <style>
 /* ---------- Light theme + background image ---------- */
 .stApp {
-  /* SVG pattern background (embedded, no external URL) */
   background-image:
     url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='1200' height='800'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop stop-color='%23e0f2fe' offset='0'/><stop stop-color='%23fce7f3' offset='0.5'/><stop stop-color='%23ecfccb' offset='1'/></linearGradient></defs><rect width='1200' height='800' fill='url(%23g)'/><path d='M0,520 C220,460 420,610 650,540 C880,470 1020,570 1200,520 L1200,800 L0,800 Z' fill='%23ffffff' fill-opacity='0.55'/><path d='M0,600 C260,540 430,700 700,620 C940,550 1040,660 1200,610' stroke='%2399f6e4' stroke-width='18' stroke-opacity='0.35' fill='none'/><path d='M0,650 C280,590 470,740 760,660 C980,600 1090,700 1200,660' stroke='%23a5b4fc' stroke-width='14' stroke-opacity='0.30' fill='none'/></svg>");
   background-size: cover;
@@ -32,25 +32,17 @@ st.markdown("""
   color: #111827 !important;
 }
 
-/* Make markdown/text readable */
-html, body, [class*="css"]  {
-  color: #111827 !important;
-}
+html, body, [class*="css"]  { color: #111827 !important; }
 
-/* Sidebar */
 section[data-testid="stSidebar"]{
   background: rgba(255,255,255,0.72) !important;
   backdrop-filter: blur(10px);
   border-right: 1px solid rgba(17,24,39,0.08);
 }
-section[data-testid="stSidebar"] *{
-  color: #111827 !important;
-}
+section[data-testid="stSidebar"] *{ color: #111827 !important; }
 
-/* Main container spacing */
 .block-container { padding-top: 1.2rem; }
 
-/* Cards for metrics */
 div[data-testid="stMetric"] {
   background: rgba(255,255,255,0.82);
   border: 1px solid rgba(17,24,39,0.10);
@@ -59,7 +51,6 @@ div[data-testid="stMetric"] {
   box-shadow: 0 8px 22px rgba(17,24,39,0.07);
 }
 
-/* Expanders */
 div[data-testid="stExpander"] {
   border-radius: 16px;
   border: 1px solid rgba(17,24,39,0.10);
@@ -67,7 +58,6 @@ div[data-testid="stExpander"] {
   box-shadow: 0 8px 22px rgba(17,24,39,0.06);
 }
 
-/* Buttons */
 .stButton button {
   border-radius: 14px;
   border: 1px solid rgba(17,24,39,0.12);
@@ -80,7 +70,6 @@ div[data-testid="stExpander"] {
   box-shadow: 0 8px 20px rgba(99,102,241,0.18);
 }
 
-/* Inputs */
 div[data-baseweb="input"] input, textarea {
   background: rgba(255,255,255,0.88) !important;
   color: #111827 !important;
@@ -88,22 +77,17 @@ div[data-baseweb="input"] input, textarea {
   border: 1px solid rgba(17,24,39,0.14) !important;
 }
 
-/* Chat bubbles: ensure readable text */
 div[data-testid="stChatMessage"]{
   background: rgba(255,255,255,0.80);
   border: 1px solid rgba(17,24,39,0.10);
   border-radius: 16px;
   box-shadow: 0 8px 18px rgba(17,24,39,0.05);
 }
-div[data-testid="stChatMessage"] *{
-  color: #111827 !important;
-}
+div[data-testid="stChatMessage"] *{ color: #111827 !important; }
 
-/* Links */
 a { color: #1d4ed8 !important; }
 </style>
 """, unsafe_allow_html=True)
-
 
 # ---------- Header ----------
 st.title("📄 Smart Document Copilot")
@@ -111,7 +95,6 @@ st.markdown(
     "<div style='opacity:0.9'>Amazon Nova on Bedrock • Multimodal RAG • Evidence • Compare • PDF Report &nbsp; <b>#AmazonNova</b></div>",
     unsafe_allow_html=True
 )
-
 
 # ---------- Helpers ----------
 def extract_text_from_pdf(file) -> str:
@@ -160,27 +143,23 @@ def reset_session():
     for k in list(st.session_state.keys()):
         del st.session_state[k]
 
-
 # ---------- Sidebar ----------
 st.sidebar.header("⚙️ Controls")
 st.sidebar.button("🔄 Reset / New session", on_click=reset_session, use_container_width=True)
 
 mode = st.sidebar.radio("Mode", ["Single Document", "Compare Two Documents"])
-
 chunk_size = st.sidebar.slider("Chunk size (chars)", 400, 2000, 1000, 100)
 overlap = st.sidebar.slider("Overlap (chars)", 0, 400, 150, 25)
 top_k = st.sidebar.slider("Top-K sources", 2, 8, 4, 1)
 
 st.sidebar.markdown("---")
-st.sidebar.caption("✅ Demo tips:\n- Ask about key results\n- Ask limitations\n- Ask future work\n- Show Evidence + Sources\n- Download PDF report")
-
+st.sidebar.caption("✅ Demo tips:\n- Upload PDF OR Image\n- Ask: 'What text is in the image?'\n- Show Evidence + Sources\n- Download PDF report")
 
 # ---------- Session init ----------
 if "chat" not in st.session_state:
     st.session_state.chat = []
 if "qa_log" not in st.session_state:
     st.session_state.qa_log = []
-
 
 # =======================
 # Mode: Single Document
@@ -191,41 +170,51 @@ if mode == "Single Document":
     user_text = st.text_area("✍️ Paste text / notes (optional)", height=140, placeholder="Paste any text you want the bot to use...")
 
     if uploaded_pdf is None and uploaded_img is None and not user_text.strip():
-        st.info("Upload a PDF or an Image or paste text → Build Index → Start chatting.")
+        st.info("Upload a PDF or Image or paste text → Build Index → Start chatting.")
         st.stop()
-    
+
     full_text_parts = []
-    
-    # PDF text
+
+    # PDF → text
     if uploaded_pdf is not None:
         pdf_text = extract_text_from_pdf(uploaded_pdf)
         full_text_parts.append("=== PDF TEXT ===\n" + pdf_text)
-    
-    # Image (we can't read text from image unless OCR is added)
+
+    # Image → OCR (Textract) → text
     if uploaded_img is not None:
         img = Image.open(uploaded_img)
         st.image(img, caption="Uploaded image", use_container_width=True)
-    
-        # We add a placeholder chunk so image presence is known
-        # (If you later add OCR/captioning, replace this)
-        full_text_parts.append(f"=== IMAGE UPLOADED ===\nFilename: {uploaded_img.name}\n")
-    
-    # User text
+
+        with st.spinner("Extracting text from image (Amazon Textract OCR)..."):
+            image_bytes = uploaded_img.getvalue()
+            ocr_text = textract_image_to_text(image_bytes, region="ap-south-1")
+
+        if ocr_text.strip():
+            st.success("Image text extracted ✅")
+            with st.expander("🧾 Extracted image text (OCR)", expanded=False):
+                st.text_area("OCR text", ocr_text, height=160)
+
+            full_text_parts.append("=== IMAGE OCR TEXT ===\n" + ocr_text)
+        else:
+            st.warning("No readable text detected in the image.")
+            full_text_parts.append(f"=== IMAGE UPLOADED ===\nFilename: {uploaded_img.name}\n(No OCR text found)")
+
+    # User notes
     if user_text.strip():
         full_text_parts.append("=== USER NOTES ===\n" + user_text.strip())
-    
+
     full_text = "\n\n".join(full_text_parts)
     chunks = chunk_text(full_text, chunk_size=chunk_size, overlap=overlap)
 
-    # Premium metrics
+    # Metrics
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Chunks", len(chunks))
     c2.metric("Top-K", top_k)
     c3.metric("Chunk size", chunk_size)
     c4.metric("Mode", "Single")
 
-    with st.expander("📄 Document preview", expanded=False):
-        st.text_area("Extracted text (preview)", full_text[:8000], height=240)
+    with st.expander("📄 Combined text preview", expanded=False):
+        st.text_area("Preview", full_text[:8000], height=240)
 
     st.subheader("1) Index the document")
     if "single_rag" not in st.session_state:
@@ -241,7 +230,7 @@ if mode == "Single Document":
             st.success("Index ready ✅")
 
     with b:
-        st.info("Once indexed, chat below. Answers include Evidence + Sources. Response time is shown at bottom.")
+        st.info("Chat below. OCR text from images is included in retrieval. Response time appears at bottom.")
 
     st.divider()
 
@@ -260,12 +249,11 @@ if mode == "Single Document":
         st.warning("Build the index first to enable chat.")
         st.stop()
 
-    # Render chat history
     for msg in st.session_state.chat:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    user_q = st.chat_input("Ask something… (e.g., What are the key results and what do they imply?)")
+    user_q = st.chat_input("Ask something… (try: What text is in the image?)")
 
     if user_q:
         st.session_state.chat.append({"role": "user", "content": user_q})
@@ -300,11 +288,7 @@ if mode == "Single Document":
             st.caption(f"⏱ Average response time: {response_time} sec")
 
         st.session_state.chat.append({"role": "assistant", "content": answer_text})
-        st.session_state.qa_log.append({
-            "question": user_q,
-            "answer": answer_text,
-            "evidence": evidence_text,
-        })
+        st.session_state.qa_log.append({"question": user_q, "answer": answer_text, "evidence": evidence_text})
 
     st.divider()
 
@@ -321,21 +305,11 @@ if mode == "Single Document":
 
         sections = [
             ("Document type (auto)", auto_type),
-            ("Document preview (first 1200 chars)", full_text[:1200]),
+            ("Combined text preview (first 1200 chars)", full_text[:1200]),
             ("Recent Q&A (up to last 10)", qa_text or "No Q&A yet."),
         ]
-        pdf_bytes = make_pdf_report(
-            filename="smart_doc_copilot_report.pdf",
-            title="Smart Document Copilot Report",
-            sections=sections,
-        )
-        st.download_button(
-            "⬇️ Download report",
-            data=pdf_bytes,
-            file_name="smart_doc_copilot_report.pdf",
-            mime="application/pdf",
-        )
-
+        pdf_bytes = make_pdf_report("smart_doc_copilot_report.pdf", "Smart Document Copilot Report", sections)
+        st.download_button("⬇️ Download report", data=pdf_bytes, file_name="smart_doc_copilot_report.pdf", mime="application/pdf")
 
 # =======================
 # Mode: Compare Two Docs
@@ -363,11 +337,6 @@ else:
     m1.metric("Doc A chunks", len(chunks_a))
     m2.metric("Doc B chunks", len(chunks_b))
     m3.metric("Mode", "Compare")
-
-    with st.expander("Doc A preview", expanded=False):
-        st.text_area("Doc A (preview)", text_a[:5000], height=220)
-    with st.expander("Doc B preview", expanded=False):
-        st.text_area("Doc B (preview)", text_b[:5000], height=220)
 
     if "rag_a" not in st.session_state:
         st.session_state.rag_a = None
@@ -413,34 +382,3 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
-
-        st.session_state.last_compare = out
-        st.session_state.last_compare_q = q
-
-    st.divider()
-    st.subheader("3) Export comparison report (PDF)")
-
-    if st.button("📄 Generate comparison PDF"):
-        compare_out = st.session_state.get("last_compare", "Run a comparison first to include output here.")
-        compare_q = st.session_state.get("last_compare_q", "(no question yet)")
-
-        sections = [
-            ("Comparison question", compare_q),
-            ("Comparison output", compare_out),
-            ("Doc A preview (first 1200 chars)", text_a[:1200]),
-            ("Doc B preview (first 1200 chars)", text_b[:1200]),
-        ]
-
-        pdf_bytes = make_pdf_report(
-            filename="smart_doc_copilot_compare_report.pdf",
-            title="Smart Document Copilot – Comparison Report",
-            sections=sections,
-        )
-        st.download_button(
-            "⬇️ Download comparison report",
-            data=pdf_bytes,
-            file_name="smart_doc_copilot_compare_report.pdf",
-            mime="application/pdf",
-        )
-
-
