@@ -1,16 +1,21 @@
+import base64
 import json
-from typing import List, Dict
+from typing import List, Dict, Any
+
 import boto3
 
-# Regions
-GEN_REGION = "ap-south-1"   # Nova Lite inference profile region
-EMBED_REGION = "us-east-1"  # embeddings supported here
+# -------------------------
+# Regions / Model IDs
+# -------------------------
+GEN_REGION = "ap-south-1"   # Nova Lite inference profile is here for you
+EMBED_REGION = "us-east-1"  # embeddings supported here (your earlier setup)
 
-# Use your inference profile ID (you confirmed this exists)
-# Example: apac.amazon.nova-lite-v1:0
+# Use your inference profile ID (system-defined profile you listed)
+# Example from your output:
+# ID: apac.amazon.nova-lite-v1:0
 NOVA_LITE_MODEL_ID = "apac.amazon.nova-lite-v1:0"
 
-# Multimodal embeddings model ID (works from EMBED_REGION)
+# Embeddings model ID
 NOVA_MM_EMBED_MODEL_ID = "amazon.nova-2-multimodal-embeddings-v1:0"
 
 
@@ -18,6 +23,9 @@ def get_bedrock_runtime(region: str):
     return boto3.client("bedrock-runtime", region_name=region)
 
 
+# -------------------------
+# Embeddings (for FAISS)
+# -------------------------
 def _find_first_float_list(obj):
     """Walk nested dict/list to find first list of floats (embedding vector)."""
     if isinstance(obj, list):
@@ -62,205 +70,85 @@ def embed_text(text: str, dim: int = 1024) -> List[float]:
     return vec
 
 
-def recommend_rag_settings(doc_text: str) -> dict:
-    """
-    Returns auto RAG settings:
-      - chunk_size (chars)
-      - overlap (chars)
-      - top_k (sources)
-    Uses Nova Lite to choose based on length/structure of the document.
-    """
-    brt = get_bedrock_runtime(GEN_REGION)
-
-    prompt = f"""
-You are optimizing RAG settings for a document QA app.
-
-Choose values for:
-- chunk_size: integer 600 to 1600
-- overlap: integer 50 to 250
-- top_k: integer 3 to 6
-
-Heuristics:
-- Long/technical docs → chunk_size 1100-1500, overlap 150-220, top_k 4-6
-- Short docs → chunk_size 700-1000, overlap 80-150, top_k 3-4
-- Avoid too small chunks.
-- Keep overlap moderate.
-
-Return ONLY valid JSON like:
-{{"chunk_size": 1200, "overlap": 180, "top_k": 4}}
-
-Document excerpt:
-{doc_text[:8000]}
-"""
-    resp = brt.converse(
-        modelId=NOVA_LITE_MODEL_ID,
-        messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": 80, "temperature": 0.2, "topP": 0.9},
-    )
-    txt = resp["output"]["message"]["content"][0]["text"].strip()
-
-    # Safe parse + fallback
-    try:
-        out = json.loads(txt)
-        chunk_size = int(out.get("chunk_size", 1000))
-        overlap = int(out.get("overlap", 150))
-        top_k = int(out.get("top_k", 4))
-    except Exception:
-        chunk_size, overlap, top_k = 1000, 150, 4
-
-    # Clamp to safe ranges
-    chunk_size = max(600, min(1600, chunk_size))
-    overlap = max(50, min(250, overlap))
-    top_k = max(3, min(6, top_k))
-
-    return {"chunk_size": chunk_size, "overlap": overlap, "top_k": top_k}
-
-# ---------------- Image -> Text / Insights (Nova Lite multimodal) ----------------
-
-def _normalize_img_format(fmt: str) -> str:
-    fmt = (fmt or "").lower().strip(". ")
-    if fmt in ("jpg", "jpe"):
-        return "jpeg"
+# -------------------------
+# Multimodal (Image -> Text / Insights) using Nova Lite
+# -------------------------
+def _img_block(image_bytes: bytes, image_format: str) -> Dict[str, Any]:
+    # Bedrock Converse expects base64-encoded bytes for images in JSON payload.
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+    fmt = (image_format or "png").lower()
+    if fmt == "jpg":
+        fmt = "jpeg"
     if fmt not in ("png", "jpeg", "webp"):
-        # Nova supports common formats; fallback to jpeg
-        return "jpeg"
-    return fmt
+        fmt = "png"
+    return {"image": {"format": fmt, "source": {"bytes": b64}}}
 
 
 def nova_image_to_text(image_bytes: bytes, image_format: str = "png") -> str:
-    """
-    Uses Nova Lite multimodal to extract all visible text from the image.
-    This replaces Textract for your hackathon/demo.
-    """
+    """Extract readable text from an image using Nova Lite multimodal reasoning."""
     brt = get_bedrock_runtime(GEN_REGION)
-    image_format = _normalize_img_format(image_format)
 
-    messages = [
+    msg = [
         {
             "role": "user",
             "content": [
-                {
-                    "image": {
-                        "format": image_format,
-                        "source": {"bytes": image_bytes},
-                    }
-                },
-                {
-                    "text": (
-                        "Extract ALL visible text from this image.\n"
-                        "Rules:\n"
-                        "- Output ONLY the extracted text.\n"
-                        "- Preserve line breaks.\n"
-                        "- If there is no text, output exactly: NO_TEXT_FOUND"
-                    )
-                },
+                {"text": "Extract ALL readable text from this image. Return only the extracted text."},
+                _img_block(image_bytes, image_format),
             ],
         }
     ]
 
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
-        messages=messages,
-        inferenceConfig={"maxTokens": 700, "temperature": 0.0, "topP": 0.9},
-    )
-
-    txt = resp["output"]["message"]["content"][0]["text"].strip()
-    if "NO_TEXT_FOUND" in txt.upper():
-        return ""
-    return txt
-
-
-def nova_image_insights(image_bytes: bytes, image_format: str = "png") -> str:
-    """
-    Uses Nova Lite multimodal to generate short insights from the image.
-    Good for making demo look "smart" even if image has minimal text.
-    """
-    brt = get_bedrock_runtime(GEN_REGION)
-    image_format = _normalize_img_format(image_format)
-
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"image": {"format": image_format, "source": {"bytes": image_bytes}}},
-                {
-                    "text": (
-                        "Give:\n"
-                        "1) A 1-line description of the image\n"
-                        "2) 3 bullet key insights (short)\n"
-                        "3) If you see numbers/dates, list them\n"
-                        "Be concise."
-                    )
-                },
-            ],
-        }
-    ]
-
-    resp = brt.converse(
-        modelId=NOVA_LITE_MODEL_ID,
-        messages=messages,
-        inferenceConfig={"maxTokens": 350, "temperature": 0.2, "topP": 0.9},
+        messages=msg,
+        inferenceConfig={"maxTokens": 800, "temperature": 0.0, "topP": 0.9},
     )
     return resp["output"]["message"]["content"][0]["text"].strip()
 
-def generate_report_title(doc_text: str) -> str:
-    """
-    Creates a short, human-friendly report title from the document content.
-    Returns plain text (no quotes/backticks).
-    """
+
+def nova_image_insights(image_bytes: bytes, image_format: str = "png") -> str:
+    """Generate short insights from an image (what it is, key fields, key numbers, issues)."""
     brt = get_bedrock_runtime(GEN_REGION)
 
-    prompt = f"""
-You are a helpful assistant. Create a short report title based on the content.
+    prompt = """
+You are Smart Document Copilot.
+Analyze the image and provide:
+- What it is (1 line)
+- Key entities/fields (bullets)
+- Key numbers/amounts/dates (bullets if present)
+- One useful insight (implication / issue / next step)
 
-Rules:
-- 4 to 8 words
-- Title Case
-- No quotes, no punctuation at the end
-- No emojis
-- If content is unclear, output: Smart Document Report
-
-Content excerpt:
-{doc_text[:6000]}
+Be concise. Do not invent numbers.
 """
+
+    msg = [
+        {
+            "role": "user",
+            "content": [
+                {"text": prompt.strip()},
+                _img_block(image_bytes, image_format),
+            ],
+        }
+    ]
+
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
-        messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": 40, "temperature": 0.2, "topP": 0.9},
+        messages=msg,
+        inferenceConfig={"maxTokens": 700, "temperature": 0.2, "topP": 0.9},
     )
-
-    title = resp["output"]["message"]["content"][0]["text"].strip()
-
-    # Safety cleanup
-    title = title.replace('"', "").replace("`", "").strip()
-    if not title:
-        return "Smart Document Report"
-
-    # Keep it short
-    words = title.split()
-    if len(words) > 10:
-        title = " ".join(words[:10])
-
-    return title
+    return resp["output"]["message"]["content"][0]["text"].strip()
 
 
-# ---------------- Doc type + Extraction ----------------
-
+# -------------------------
+# Doc types + Extraction
+# -------------------------
 DOC_TYPES = ["auto", "resume", "invoice", "contract", "research_paper", "generic"]
 
 EXTRACTION_SCHEMAS = {
-    "resume": {
-        "fields": ["name", "email", "phone", "location", "skills", "years_experience", "latest_role", "education", "certifications"]
-    },
-    "invoice": {
-        "fields": ["vendor", "invoice_number", "invoice_date", "due_date", "total_amount", "currency", "line_items"]
-    },
-    "contract": {
-        "fields": ["parties", "effective_date", "end_date", "termination_clause", "payment_terms", "governing_law", "key_obligations", "risks"]
-    },
-    "research_paper": {
-        "fields": ["title", "authors", "abstract_summary", "methodology", "metrics", "key_results", "limitations", "future_work"]
-    },
+    "resume": {"fields": ["name", "email", "phone", "location", "skills", "years_experience", "latest_role", "education", "certifications"]},
+    "invoice": {"fields": ["vendor", "invoice_number", "invoice_date", "due_date", "total_amount", "currency", "line_items", "payment_terms"]},
+    "contract": {"fields": ["parties", "effective_date", "end_date", "termination_clause", "payment_terms", "governing_law", "key_obligations", "risks"]},
+    "research_paper": {"fields": ["title", "authors", "abstract_summary", "methodology", "metrics", "key_results", "limitations", "future_work"]},
     "generic": {"fields": ["summary", "key_points", "dates", "numbers", "entities"]},
 }
 
@@ -279,9 +167,9 @@ Document excerpt:
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
+        inferenceConfig={"maxTokens": 20, "temperature": 0.0, "topP": 0.9},
     )
     t = resp["output"]["message"]["content"][0]["text"].strip().lower()
-
     for allowed in ["resume", "invoice", "contract", "research_paper", "generic"]:
         if allowed in t:
             return allowed
@@ -325,13 +213,15 @@ Document:
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
+        inferenceConfig={"maxTokens": 900, "temperature": 0.1, "topP": 0.9},
     )
     return resp["output"]["message"]["content"][0]["text"]
 
 
-# ---------------- Q&A with short+insight + evidence ----------------
-
-def ask_with_evidence(question: str, context_chunks: List[str]) -> Dict[str, str]:
+# -------------------------
+# Q&A with Evidence (no JSON output)
+# -------------------------
+def ask_with_evidence(question: str, context_chunks: List[str]) -> dict:
     brt = get_bedrock_runtime(GEN_REGION)
 
     sources_block = "\n\n".join([f"[Source {i+1}]\n{c}" for i, c in enumerate(context_chunks)])
@@ -350,9 +240,13 @@ Answer style:
 - If information is not found, say:
   "I don't know based on the document."
 
-After the answer, add:
+After the answer, add a section exactly like this:
 
 Evidence:
+- short exact quote
+- short exact quote
+
+Evidence rules:
 - Provide 1–3 short exact quotes from the sources.
 - Keep quotes short and relevant.
 
@@ -362,9 +256,11 @@ SOURCES:
 QUESTION:
 {question}
 """
+
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
+        inferenceConfig={"maxTokens": 700, "temperature": 0.2, "topP": 0.9},
     )
 
     text = resp["output"]["message"]["content"][0]["text"]
@@ -372,13 +268,15 @@ QUESTION:
     if "Evidence:" in text:
         answer_part, evidence_part = text.split("Evidence:", 1)
     else:
-        answer_part, evidence_part = text, ""
+        answer_part = text
+        evidence_part = ""
 
     return {"answer": answer_part.strip(), "evidence": evidence_part.strip()}
 
 
-# ---------------- Compare two docs ----------------
-
+# -------------------------
+# Compare docs
+# -------------------------
 def compare_docs(question: str, ctx_a: List[str], ctx_b: List[str], label_a="Doc A", label_b="Doc B") -> str:
     brt = get_bedrock_runtime(GEN_REGION)
 
@@ -410,7 +308,144 @@ QUESTION:
     resp = brt.converse(
         modelId=NOVA_LITE_MODEL_ID,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
+        inferenceConfig={"maxTokens": 900, "temperature": 0.2, "topP": 0.9},
     )
     return resp["output"]["message"]["content"][0]["text"]
 
 
+# -------------------------
+# Nova Auto RAG tuning
+# -------------------------
+def recommend_rag_settings(doc_text: str) -> dict:
+    brt = get_bedrock_runtime(GEN_REGION)
+
+    prompt = f"""
+You are optimizing RAG settings for a document QA app.
+
+Choose values for:
+- chunk_size: integer 600 to 1600
+- overlap: integer 50 to 250
+- top_k: integer 3 to 6
+
+Heuristics:
+- Long/technical docs → chunk_size 1100-1500, overlap 150-220, top_k 4-6
+- Short docs → chunk_size 700-1000, overlap 80-150, top_k 3-4
+- Avoid too small chunks.
+- Keep overlap moderate.
+
+Return ONLY valid JSON like:
+{{"chunk_size": 1200, "overlap": 180, "top_k": 4}}
+
+Document excerpt:
+{doc_text[:8000]}
+"""
+    resp = brt.converse(
+        modelId=NOVA_LITE_MODEL_ID,
+        messages=[{"role": "user", "content": [{"text": prompt}]}],
+        inferenceConfig={"maxTokens": 120, "temperature": 0.2, "topP": 0.9},
+    )
+    txt = resp["output"]["message"]["content"][0]["text"].strip()
+
+    try:
+        out = json.loads(txt)
+        chunk_size = int(out.get("chunk_size", 1000))
+        overlap = int(out.get("overlap", 150))
+        top_k = int(out.get("top_k", 4))
+    except Exception:
+        chunk_size, overlap, top_k = 1000, 150, 4
+
+    chunk_size = max(600, min(1600, chunk_size))
+    overlap = max(50, min(250, overlap))
+    top_k = max(3, min(6, top_k))
+
+    return {"chunk_size": chunk_size, "overlap": overlap, "top_k": top_k}
+
+
+# -------------------------
+# Nova Title Generation (PDF)
+# -------------------------
+def generate_report_title(doc_text: str) -> str:
+    brt = get_bedrock_runtime(GEN_REGION)
+
+    prompt = f"""
+Create a short report title based on the content.
+
+Rules:
+- 4 to 8 words
+- Title Case
+- No quotes, no emojis
+- No punctuation at the end
+- If unclear: Smart Document Report
+
+Content excerpt:
+{doc_text[:6000]}
+"""
+    resp = brt.converse(
+        modelId=NOVA_LITE_MODEL_ID,
+        messages=[{"role": "user", "content": [{"text": prompt}]}],
+        inferenceConfig={"maxTokens": 40, "temperature": 0.2, "topP": 0.9},
+    )
+
+    title = resp["output"]["message"]["content"][0]["text"].strip()
+    title = title.replace('"', "").replace("`", "").strip()
+
+    if not title:
+        return "Smart Document Report"
+
+    words = title.split()
+    if len(words) > 10:
+        title = " ".join(words[:10])
+
+    return title
+
+
+# -------------------------
+# Suggested questions (persona-based)
+# -------------------------
+def suggest_questions(doc_text: str, user_interest: str = "General", n: int = 6) -> List[str]:
+    brt = get_bedrock_runtime(GEN_REGION)
+
+    prompt = f"""
+You are a smart document copilot.
+
+Generate {n} useful questions a user might ask about this document,
+personalized for the user's interest/role: {user_interest}
+
+Rules:
+- Return ONLY valid JSON array of strings.
+- Each question must be <= 12 words.
+- No numbering, no bullets.
+- Make questions specific to the document.
+- Mix: summary, key numbers, risks, actions, and one "missing info" check.
+
+Document excerpt:
+{doc_text[:9000]}
+"""
+
+    resp = brt.converse(
+        modelId=NOVA_LITE_MODEL_ID,
+        messages=[{"role": "user", "content": [{"text": prompt}]}],
+        inferenceConfig={"maxTokens": 260, "temperature": 0.4, "topP": 0.9},
+    )
+
+    txt = resp["output"]["message"]["content"][0]["text"].strip()
+
+    try:
+        arr = json.loads(txt)
+        if isinstance(arr, list):
+            out = []
+            for q in arr:
+                if isinstance(q, str) and q.strip():
+                    out.append(q.strip())
+            return out[:n]
+    except Exception:
+        pass
+
+    return [
+        "Summarize the document in 3 bullets.",
+        "What are the key numbers or metrics?",
+        "What risks or issues are present?",
+        "What are recommended next steps?",
+        "What information is missing or unclear?",
+        "What is the main purpose here?",
+    ][:n]
