@@ -173,75 +173,62 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150):
         start += max(1, chunk_size - overlap)
     return chunks
 
-def extract_dates_with_events(text: str, max_items: int = 80):
-    """
-    Robust date extraction from noisy PDF/OCR text.
-    Returns list of dicts: [{"label": event, "value": date}]
-    - Finds many common date formats
-    - Handles line breaks/extra spaces
-    - Captures the closest meaningful phrase before the date as 'event'
-    """
+MONTHS_RE = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*"
 
-    if not text or not str(text).strip():
-        return []
-
-    # --- Normalize text for OCR/PDF quirks ---
+def normalize_for_dates(text: str) -> str:
+    """Normalize PDF/OCR text so date patterns match reliably."""
+    if not text:
+        return ""
     t = str(text)
-
-    # Join broken lines / excessive whitespace that breaks patterns
     t = t.replace("\r", "\n")
     t = re.sub(r"[ \t]+", " ", t)
     t = re.sub(r"\n{2,}", "\n", t)
-
-    # Common OCR split like "12\nMay\n2024" -> "12 May 2024"
+    # OCR split: 12\nMay\n2024
     t = re.sub(r"(\d{1,2})\s*\n\s*([A-Za-z]{3,9})\s*\n\s*(\d{2,4})", r"\1 \2 \3", t)
-
-    # Remove ordinal suffixes: 12th -> 12
+    # ordinal: 12th -> 12
     t = re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", t, flags=re.IGNORECASE)
+    # normalize dash
+    t = t.replace("–", "-").replace("—", "-")
+    return t
 
-    # Month names
-    months = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*"
+def extract_dates_with_events(text: str, max_items: int = 120):
+    """
+    Find dates and grab meaningful event words near each date.
+    Returns list: [{"Event": "...", "Date": "..."}]
+    """
+    t = normalize_for_dates(text)
+    if not t.strip():
+        return []
 
-    # --- Date patterns (more complete) ---
     date_patterns = [
-        r"\b\d{4}[/-]\d{1,2}[/-]\d{1,2}\b",                        # 2024-05-12 / 2024/5/12
-        r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",                      # 12/05/2024 or 12-5-24
-        rf"\b{months}\s+\d{{1,2}},?\s+\d{{2,4}}\b",                # May 12, 2024 / May 12 2024
-        rf"\b\d{{1,2}}\s+{months},?\s+\d{{2,4}}\b",                # 12 May 2024 / 12 May, 2024
-        rf"\b\d{{1,2}}-{months}-\d{{2,4}}\b",                      # 12-May-24 / 12-May-2024
-        rf"\b{months}-\d{{1,2}}-\d{{2,4}}\b",                      # May-12-2024
+        r"\b\d{4}[/-]\d{1,2}[/-]\d{1,2}\b",                       # 2024-05-12 / 2024/5/12
+        r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",                     # 12/05/2024 or 12-5-24
+        rf"\b{MONTHS_RE}\s+\d{{1,2}},?\s+\d{{2,4}}\b",            # May 12, 2024
+        rf"\b\d{{1,2}}\s+{MONTHS_RE},?\s+\d{{2,4}}\b",            # 12 May 2024
+        rf"\b\d{{1,2}}-{MONTHS_RE}-\d{{2,4}}\b",                  # 12-May-24
+        rf"\b{MONTHS_RE}-\d{{1,2}}-\d{{2,4}}\b",                  # May-12-2024
+        r"\b\d{1,2}\.\d{1,2}\.\d{2,4}\b",                         # 12.05.2024
     ]
-
     date_re = re.compile("|".join(date_patterns), re.IGNORECASE)
 
-    results = []
+    out = []
     seen = set()
 
-    # Split into lines so we can pick better "event" context
-    lines = t.split("\n")
-
-    for line in lines:
-        line_stripped = line.strip()
-        if not line_stripped:
+    # line-based extraction gives cleaner "event"
+    for line in t.split("\n"):
+        line = line.strip()
+        if not line:
             continue
 
-        for m in date_re.finditer(line_stripped):
+        for m in date_re.finditer(line):
             date_str = m.group(0).strip()
 
-            # Event = text before the date in the same line
-            event = line_stripped[:m.start()].strip()
+            left = line[:m.start()].strip()
+            right = line[m.end():].strip()
 
-            # If empty, try some words after the date too (sometimes "Due: 12 May 2024")
-            if not event:
-                after = line_stripped[m.end():].strip()
-                if after:
-                    event = after
+            event = left if len(left) >= 4 else right
+            event = re.sub(r"\s+", " ", event).strip(" -:;|•")
 
-            # Clean event
-            event = re.sub(r"\s+", " ", event)
-            event = event.strip(" -–—:•;|")
-
-            # Reduce very long event text to last 10-14 words
             words = event.split()
             if len(words) > 14:
                 event = " ".join(words[-14:])
@@ -254,15 +241,14 @@ def extract_dates_with_events(text: str, max_items: int = 80):
                 continue
             seen.add(key)
 
-            results.append({"label": event, "value": date_str})
-            if len(results) >= max_items:
+            out.append({"Event": event, "Date": date_str})
+            if len(out) >= max_items:
                 break
 
-        if len(results) >= max_items:
+        if len(out) >= max_items:
             break
 
-    return results
-
+    return out
 
 def try_parse_number(value: str):
     if value is None:
@@ -307,7 +293,7 @@ def reset_session():
         "pending_question",
     ]:
         st.session_state.pop(k, None)
-    # also clear dashboard cache for safety
+    # clear caches
     for k in list(st.session_state.keys()):
         if str(k).startswith("dashboard:") or str(k).startswith("img_insights:"):
             st.session_state.pop(k, None)
@@ -429,8 +415,12 @@ if mode == "Single Document":
 
     # ✅ IMPORTANT: compute doc_fp BEFORE dashboard / caching
     doc_fp = hashlib.md5(full_text[:20000].encode("utf-8", errors="ignore")).hexdigest()
-    local_dates = extract_dates_with_events(full_text, max_items=80)
 
+    # ✅ Cache date extraction (prevents “needs refresh” issue)
+    dates_key = f"dates:{doc_fp}"
+    if dates_key not in st.session_state:
+        st.session_state[dates_key] = extract_dates_with_events(full_text, max_items=120)
+    local_dates = st.session_state.get(dates_key, [])
 
     # ========================
     # 📊 Executive Dashboard
@@ -438,10 +428,12 @@ if mode == "Single Document":
     st.subheader("📊 Executive Dashboard")
     dash_key = f"dashboard:{doc_fp}"
 
-    dcol1, dcol2 = st.columns([1, 5])
+    dcol1, _ = st.columns([1, 5])
     with dcol1:
         if st.button("🔄 Refresh Dashboard", use_container_width=True):
             st.session_state.pop(dash_key, None)
+            st.session_state.pop(dates_key, None)
+            st.rerun()
 
     if dash_key not in st.session_state:
         with st.spinner("Analyzing document for dashboard insights..."):
@@ -453,7 +445,6 @@ if mode == "Single Document":
     doc_type_guess = dashboard.get("doc_type_guess", "generic")
     risk_score = int(dashboard.get("risk_score", 0) or 0)
     key_numbers = dashboard.get("key_numbers", []) or []
-    key_dates = dashboard.get("key_dates", []) or []
     risks = dashboard.get("risks", []) or []
     next_actions = dashboard.get("next_actions", []) or []
 
@@ -490,14 +481,14 @@ if mode == "Single Document":
         else:
             st.caption("No key numeric metrics detected for charting.")
 
+    # ✅ Key Dates Timeline (AI Structured) using deterministic extraction
     st.markdown("### 🗓️ Key Dates Timeline (AI Structured)")
-    date_source = local_dates  # deterministic extraction from full text
-    if date_source:
-        df_dates = pd.DataFrame(date_source).rename(columns={"label": "Event", "value": "Date"})
+    if local_dates:
+        df_dates = pd.DataFrame(local_dates)
         st.dataframe(df_dates, use_container_width=True)
     else:
         st.caption("No dates detected in the document.")
-        
+
     if risks:
         st.markdown("### ⚠️ Risks")
         for r in risks[:6]:
@@ -567,7 +558,6 @@ if mode == "Single Document":
         for i, q in enumerate(qs):
             with cols[i % 3]:
                 if st.button(q, use_container_width=True, key=f"dynq_{doc_fp}_{i}"):
-                    # run immediately
                     st.session_state["pending_question"] = q
                     st.rerun()
     else:
@@ -584,12 +574,10 @@ if mode == "Single Document":
     st.subheader("3) Chat with your document")
     st.markdown("#### 💬 Ask a question")
 
-    # If suggestion clicked, run it automatically (no accumulation)
     pending = st.session_state.pop("pending_question", "")
     if pending:
         run_single_question(pending, top_k=top_k)
 
-    # Manual input (inline here; not bottom pinned)
     with st.form("ask_form", clear_on_submit=True):
         q_text = st.text_input(
             "Type your question",
@@ -601,7 +589,6 @@ if mode == "Single Document":
     if ask_clicked and q_text.strip():
         run_single_question(q_text.strip(), top_k=top_k)
 
-    # Show ONLY latest output
     if st.session_state.get("latest_answer"):
         st.markdown("### ✅ Latest Answer")
         st.markdown(f"**Question:** {st.session_state.get('latest_q','')}")
@@ -708,9 +695,3 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
-
-
-
-
-
-
