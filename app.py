@@ -387,93 +387,62 @@ if mode == "Single Document":
 
     # Ask UI (in-section, not bottom)
     st.markdown("#### 💬 Ask a question")
-    q_col, btn_col = st.columns([5, 1])
 
-    with q_col:
-        typed_q = st.text_input(
-            "Type your question",
-            value=st.session_state.get("typed_q_input", ""),
-            placeholder="e.g., What are the key results and what do they imply?",
-            label_visibility="collapsed",
-            key="typed_q_input",
-        )
-
-
-    with btn_col:
-        if st.button("Ask", type="primary", use_container_width=True, disabled=not index_ready):
-            q = typed_q.strip()
-            if q:
-                st.session_state["pending_question"] = q
-
-    # Run question once (prevents duplicates)
+    # If user clicked a suggested question, ask it immediately (no input clearing needed)
     if "pending_question" in st.session_state:
         user_q = st.session_state.pop("pending_question")
-
+    else:
+        user_q = st.chat_input("Ask something about the document…")
+    
+    if user_q:
+        user_q = user_q.strip()
+        if not user_q:
+            st.stop()
+    
         rag = st.session_state.get("single_rag", None)
         if not isinstance(rag, RagIndex):
             st.error("Index not ready. Click **Build Index** first.")
             st.stop()
-
+    
+        # show user message
         st.session_state.chat.append({"role": "user", "content": user_q})
         with st.chat_message("user"):
             st.markdown(user_q)
-
+    
+        # retrieve
         with st.spinner("Retrieving sources..."):
             hits, scores = rag.search(user_q, k=top_k)
             ctx = [h.text for h in hits]
             avg_score = (sum(scores) / len(scores)) if scores else 0.0
-
+    
+        # answer
         with st.spinner("Thinking with Nova Lite..."):
             start_time = time.time()
             ans = ask_with_evidence(user_q, ctx)
             response_time = round(time.time() - start_time, 2)
-
+    
         answer_text = ans.get("answer", "").strip()
         evidence_text = ans.get("evidence", "").strip()
-
+    
         with st.chat_message("assistant"):
-            # Premium badge (no DeltaGenerator spam)
-            b1, b2 = st.columns([1.2, 3.8])
-            with b1:
-                label = "✅ Grounded" if avg_score >= 0.25 else "⚠️ Low confidence"
-                bg = "#DCFCE7" if avg_score >= 0.25 else "#FEF3C7"
-                fg = "#166534" if avg_score >= 0.25 else "#92400E"
-                border = "#86EFAC" if avg_score >= 0.25 else "#FCD34D"
-                st.markdown(
-                    f"""
-                    <div style="
-                        display:inline-block;
-                        padding:6px 10px;
-                        border-radius:999px;
-                        border:1px solid {border};
-                        background:{bg};
-                        color:{fg};
-                        font-weight:700;
-                        font-size:12px;">
-                        {label}
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-            with b2:
-                st.caption(f"Retrieval strength: {avg_score:.3f}")
-
+            # (keep your badge UI here if you want)
             st.markdown(answer_text if answer_text else "I don't know based on the document.")
-
+    
             if evidence_text:
                 with st.expander("📌 Evidence (exact quotes)"):
                     st.markdown(evidence_text)
-
+    
             st.markdown("**Retrieved sources**")
             for i, (h, s) in enumerate(zip(hits, scores), start=1):
                 with st.expander(f"Source {i} • score {s:.3f} • chunk #{h.chunk_id}"):
                     st.write(h.text[:2000])
-
+    
             st.markdown("---")
             st.caption(f"⏱ Average response time: {response_time} sec")
-
+    
         st.session_state.chat.append({"role": "assistant", "content": answer_text})
         st.session_state.qa_log.append({"question": user_q, "answer": answer_text, "evidence": evidence_text})
+
 
         # clear input after ask
         st.session_state["typed_q_input"] = ""
@@ -595,6 +564,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
