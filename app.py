@@ -326,6 +326,43 @@ if mode == "Single Document":
         st.code(out, language="json")
 
     st.divider()
+    
+    st.markdown("### ✨ Nova-suggested questions (auto from your document)")
+    # Regenerate suggestions when document OR interest changes
+    suggest_fp = f"{doc_fp}:{user_interest}"
+    if st.session_state.get("suggest_fp") != suggest_fp:
+        st.session_state["suggest_fp"] = suggest_fp
+        with st.spinner("Generating questions from your document..."):
+            st.session_state["suggested_questions"] = suggest_questions(
+                full_text,
+                user_interest=user_interest,
+                n=6
+            )
+    
+    qs = st.session_state.get("suggested_questions", [])
+    
+    # If model returned empty list, show a warning (no fixed fallback here)
+    if not qs:
+        st.warning("Nova couldn’t generate suggestions for this document. Try uploading a richer document.")
+    else:
+        cols = st.columns(3)
+        for i, q in enumerate(qs):
+            with cols[i % 3]:
+                if st.button(q, use_container_width=True, key=f"dynq_{i}"):
+                    st.session_state["typed_q"] = q
+                    st.session_state["pending_question"] = q
+                    st.rerun()
+    
+    # Optional: refresh suggestions button (always new set)
+    if st.button("🔄 Refresh questions", use_container_width=True):
+        with st.spinner("Refreshing questions from your document..."):
+            st.session_state["suggested_questions"] = suggest_questions(
+                full_text,
+                user_interest=user_interest,
+                n=6
+            )
+        st.rerun()
+
 
     # -------------------------------
     # Chat
@@ -555,6 +592,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
