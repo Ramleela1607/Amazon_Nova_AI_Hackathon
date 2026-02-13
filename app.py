@@ -30,61 +30,141 @@ st.set_page_config(page_title="Smart Document Copilot", layout="wide")
 # ---------- Premium UI ----------
 st.markdown("""
 <style>
+/* ----------------------------
+   VIDEO-LIKE ANIMATED BACKGROUND
+   (CSS animated gradients + moving blobs)
+   ---------------------------- */
+
 .stApp {
-  background-image:
-    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='1200' height='800'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop stop-color='%23e0f2fe' offset='0'/><stop stop-color='%23fce7f3' offset='0.5'/><stop stop-color='%23ecfccb' offset='1'/></linearGradient></defs><rect width='1200' height='800' fill='url(%23g)'/><path d='M0,520 C220,460 420,610 650,540 C880,470 1020,570 1200,520 L1200,800 L0,800 Z' fill='%23ffffff' fill-opacity='0.55'/><path d='M0,600 C260,540 430,700 700,620 C940,550 1040,660 1200,610' stroke='%2399f6e4' stroke-width='18' stroke-opacity='0.35' fill='none'/><path d='M0,650 C280,590 470,740 760,660 C980,600 1090,700 1200,660' stroke='%23a5b4fc' stroke-width='14' stroke-opacity='0.30' fill='none'/></svg>");
-  background-size: cover;
+  background: radial-gradient(circle at 10% 20%, rgba(224,242,254,0.95), transparent 45%),
+              radial-gradient(circle at 90% 10%, rgba(252,231,243,0.92), transparent 45%),
+              radial-gradient(circle at 50% 90%, rgba(236,252,203,0.92), transparent 50%),
+              linear-gradient(120deg, rgba(255,255,255,0.85), rgba(255,255,255,0.72));
   background-attachment: fixed;
-  color: #111827 !important;
+  color: #0f172a !important;
+  position: relative;
+  overflow-x: hidden;
 }
-html, body, [class*="css"]  { color: #111827 !important; }
+
+/* Animated overlay layer (looks like a subtle moving video) */
+.stApp::before{
+  content:"";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+
+  background:
+    radial-gradient(circle at 15% 35%, rgba(99,102,241,0.22), transparent 40%),
+    radial-gradient(circle at 75% 20%, rgba(16,185,129,0.18), transparent 40%),
+    radial-gradient(circle at 70% 80%, rgba(236,72,153,0.14), transparent 42%),
+    radial-gradient(circle at 25% 85%, rgba(14,165,233,0.16), transparent 45%);
+  filter: blur(22px);
+  animation: floatBg 14s ease-in-out infinite alternate;
+  opacity: 0.9;
+}
+
+@keyframes floatBg {
+  0%   { transform: translate3d(-20px, -18px, 0) scale(1.02); }
+  50%  { transform: translate3d(24px, 16px, 0) scale(1.06); }
+  100% { transform: translate3d(-10px, 26px, 0) scale(1.03); }
+}
+
+/* Everything above background layer */
+.block-container,
+section[data-testid="stSidebar"],
+header,
+footer,
+div[data-testid="stAppViewContainer"]{
+  position: relative;
+  z-index: 1;
+}
+
+/* Make ALL text readable */
+html, body, [class*="css"], p, span, div {
+  color: #0f172a !important;
+}
+
+/* Sidebar: frosted glass */
 section[data-testid="stSidebar"]{
-  background: rgba(255,255,255,0.72) !important;
-  backdrop-filter: blur(10px);
-  border-right: 1px solid rgba(17,24,39,0.08);
+  background: rgba(255,255,255,0.78) !important;
+  backdrop-filter: blur(14px);
+  border-right: 1px solid rgba(15,23,42,0.10);
 }
-section[data-testid="stSidebar"] *{ color: #111827 !important; }
-.block-container { padding-top: 1.2rem; }
+section[data-testid="stSidebar"] *{
+  color: #0f172a !important;
+}
+
+/* Titles / headers clarity */
+h1, h2, h3 {
+  color: #0b1220 !important;
+  text-shadow: 0 1px 0 rgba(255,255,255,0.65);
+}
+
+/* Metric cards */
 div[data-testid="stMetric"] {
-  background: rgba(255,255,255,0.82);
-  border: 1px solid rgba(17,24,39,0.10);
+  background: rgba(255,255,255,0.88);
+  border: 1px solid rgba(15,23,42,0.10);
   padding: 14px;
-  border-radius: 16px;
-  box-shadow: 0 8px 22px rgba(17,24,39,0.07);
+  border-radius: 18px;
+  box-shadow: 0 10px 26px rgba(2,6,23,0.08);
 }
+
+/* Expanders */
 div[data-testid="stExpander"] {
-  border-radius: 16px;
-  border: 1px solid rgba(17,24,39,0.10);
-  background: rgba(255,255,255,0.78);
-  box-shadow: 0 8px 22px rgba(17,24,39,0.06);
+  border-radius: 18px;
+  border: 1px solid rgba(15,23,42,0.10);
+  background: rgba(255,255,255,0.86);
+  box-shadow: 0 10px 24px rgba(2,6,23,0.07);
 }
+
+/* Chat bubbles */
+div[data-testid="stChatMessage"]{
+  background: rgba(255,255,255,0.90);
+  border: 1px solid rgba(15,23,42,0.10);
+  border-radius: 18px;
+  box-shadow: 0 10px 22px rgba(2,6,23,0.06);
+}
+div[data-testid="stChatMessage"] *{
+  color: #0f172a !important;
+}
+
+/* Inputs */
+div[data-baseweb="input"] input, textarea {
+  background: rgba(255,255,255,0.94) !important;
+  color: #0f172a !important;
+  border-radius: 14px !important;
+  border: 1px solid rgba(15,23,42,0.16) !important;
+}
+
+/* Buttons: premium + visible */
 .stButton button {
   border-radius: 14px;
-  border: 1px solid rgba(17,24,39,0.12);
-  background: rgba(255,255,255,0.90);
-  color: #111827 !important;
-  font-weight: 650;
+  border: 1px solid rgba(15,23,42,0.14);
+  background: rgba(255,255,255,0.92);
+  color: #0f172a !important;
+  font-weight: 700;
+  transition: transform 120ms ease, box-shadow 120ms ease;
 }
 .stButton button:hover {
+  transform: translateY(-1px);
   border: 1px solid rgba(99,102,241,0.45);
-  box-shadow: 0 8px 20px rgba(99,102,241,0.18);
+  box-shadow: 0 10px 26px rgba(99,102,241,0.18);
 }
-div[data-baseweb="input"] input, textarea {
+
+/* Suggestion buttons (make them pop) */
+button[kind="secondary"]{
   background: rgba(255,255,255,0.92) !important;
-  color: #111827 !important;
-  border-radius: 12px !important;
-  border: 1px solid rgba(17,24,39,0.14) !important;
 }
-div[data-testid="stChatMessage"]{
-  background: rgba(255,255,255,0.86);
-  border: 1px solid rgba(17,24,39,0.10);
-  border-radius: 16px;
-  box-shadow: 0 8px 18px rgba(17,24,39,0.05);
-}
-div[data-testid="stChatMessage"] *{ color: #111827 !important; }
+
+/* Links */
 a { color: #1d4ed8 !important; }
+
+/* Reduce top padding */
+.block-container { padding-top: 1.1rem; }
 </style>
 """, unsafe_allow_html=True)
+
 
 # ---------- Header ----------
 st.title("📄 Smart Document Copilot")
@@ -534,6 +614,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
