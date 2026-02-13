@@ -391,11 +391,12 @@ if mode == "Single Document":
     with q_col:
         typed_q = st.text_input(
             "Type your question",
-            value=st.session_state.get("typed_q", ""),
+            value=st.session_state.get("typed_q_input", ""),
             placeholder="e.g., What are the key results and what do they imply?",
             label_visibility="collapsed",
-            key="typed_q",
+            key="typed_q_input",
         )
+
 
     with btn_col:
         if st.button("Ask", type="primary", use_container_width=True, disabled=not index_ready):
@@ -592,6 +593,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
