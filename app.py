@@ -24,8 +24,7 @@ from bedrock_utils import (
     nova_image_insights_brief,
     generate_report_title,
     suggest_questions,
-    generate_dashboard_insights,
-    generate_dashboard_insights_dynamic,
+    generate_dashboard_insights_dynamic,  # ✅ use dynamic dashboard
 )
 
 # ---------- Page ----------
@@ -176,96 +175,54 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150):
 
 MONTHS_RE = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*"
 
-def normalize_for_dates(text: str) -> str:
-    """Normalize PDF/OCR text so date patterns match reliably."""
-    if not text:
-        return ""
-    t = str(text)
-    t = t.replace("\r", "\n")
-    t = re.sub(r"[ \t]+", " ", t)
-    t = re.sub(r"\n{2,}", "\n", t)
-    # OCR split: 12\nMay\n2024
-    t = re.sub(r"(\d{1,2})\s*\n\s*([A-Za-z]{3,9})\s*\n\s*(\d{2,4})", r"\1 \2 \3", t)
-    # ordinal: 12th -> 12
-    t = re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", t, flags=re.IGNORECASE)
-    # normalize dash
-    t = t.replace("–", "-").replace("—", "-")
-    return t
-
 def extract_dates_with_events(text: str, max_items: int = 120):
     """
-    Robust date extraction for resumes/PDF/OCR text.
-    Captures:
-      - Date ranges: "Aug 2023 – Present", "Jan 2020 - Aug 2023"
-      - Month-Year: "Aug 2023"
-      - ISO dates: "2024-05-12"
-      - Slash dates: "12/05/2024"
-      - Long form: "May 12, 2024" / "12 May 2024"
-
-    Returns:
-      [{"label": event, "value": date_or_range}, ...]
-      where "label" is the closest meaningful phrase before the date on the same line.
+    Robust date extraction for PDF/OCR text.
+    Handles:
+      - ranges: "Aug 2023 - Present", "Jan 2020 - Aug 2023"
+      - month-year: "Aug 2023"
+      - iso: "2024-05-12"
+      - slash: "12/05/2024"
+      - long form: "May 12, 2024" / "12 May 2024"
+    Returns: [{"label": event, "value": date_or_range}, ...]
     """
     if not text or not str(text).strip():
         return []
 
     t = str(text)
-
-    # Normalize common PDF/OCR quirks
     t = t.replace("\r", "\n")
     t = t.replace("\u2013", "-").replace("\u2014", "-")  # en/em dash -> hyphen
     t = re.sub(r"[ \t]+", " ", t)
     t = re.sub(r"\n{2,}", "\n", t)
-
-    # Fix OCR split: "12\nMay\n2024" -> "12 May 2024"
-    t = re.sub(r"(\d{1,2})\s*\n\s*([A-Za-z]{3,9})\s*\n\s*(\d{2,4})", r"\1 \2 \3", t)
-
-    # Remove ordinal suffix: 12th -> 12
+    t = re.sub(r"(\d{1,2})\s*\n\s*([A-Za-z]{3,9})\s*\n\s*(\d{2,4})", r"\1 \2 \3", t)  # 12\nMay\n2024
     t = re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", t, flags=re.IGNORECASE)
 
     months = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*"
+    p_range = rf"\b({months}\s+\d{{4}})\s*-\s*(Present|{months}\s+\d{{4}})\b"
+    p_iso = r"\b\d{4}[/-]\d{1,2}[/-]\d{1,2}\b"
+    p_slash = r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b"
+    p_mdy = rf"\b{months}\s+\d{{1,2}},?\s+\d{{2,4}}\b"
+    p_dmy = rf"\b\d{{1,2}}\s+{months},?\s+\d{{2,4}}\b"
+    p_my = rf"\b{months}\s+\d{{4}}\b"
 
-    # Patterns
-    p_iso = r"\b\d{4}[/-]\d{1,2}[/-]\d{1,2}\b"                       # 2024-05-12 / 2024/5/12
-    p_slash = r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b"                   # 12/05/2024 or 12-5-24
-    p_month_day_year = rf"\b{months}\s+\d{{1,2}},?\s+\d{{2,4}}\b"     # May 12, 2024
-    p_day_month_year = rf"\b\d{{1,2}}\s+{months},?\s+\d{{2,4}}\b"     # 12 May 2024
-    p_month_year = rf"\b{months}\s+\d{{4}}\b"                         # Aug 2023
-    p_range = rf"\b({months}\s+\d{{4}})\s*-\s*(Present|{months}\s+\d{{4}})\b"  # Aug 2023 - Present / Jan 2020 - Aug 2023
+    date_re = re.compile("|".join([p_range, p_iso, p_slash, p_mdy, p_dmy, p_my]), re.IGNORECASE)
 
-    date_re = re.compile(
-        "|".join([p_range, p_iso, p_slash, p_month_day_year, p_day_month_year, p_month_year]),
-        re.IGNORECASE
-    )
+    results, seen = [], set()
 
-    results = []
-    seen = set()
-
-    # Work line-by-line so the "event" is meaningful
     for line in t.split("\n"):
-        line_stripped = line.strip()
-        if not line_stripped:
+        ln = line.strip()
+        if not ln:
             continue
-
-        for m in date_re.finditer(line_stripped):
+        for m in date_re.finditer(ln):
             date_str = m.group(0).strip()
-
-            # event = closest text BEFORE date on same line
-            event = line_stripped[:m.start()].strip()
-
-            # If the date is at the beginning, use after-text
+            event = ln[:m.start()].strip()
             if not event:
-                after = line_stripped[m.end():].strip()
-                event = after
+                event = ln[m.end():].strip()
 
-            # Clean event
             event = re.sub(r"\s+", " ", event).strip(" -:•;|")
-
-            # If still empty, fallback
             if not event:
                 event = "Date mentioned"
 
-            # Reduce very long event text
             words = event.split()
             if len(words) > 16:
                 event = " ".join(words[-16:])
@@ -278,12 +235,10 @@ def extract_dates_with_events(text: str, max_items: int = 120):
             results.append({"label": event, "value": date_str})
             if len(results) >= max_items:
                 break
-
         if len(results) >= max_items:
             break
 
     return results
-
 
 def try_parse_number(value: str):
     if value is None:
@@ -329,9 +284,9 @@ def reset_session():
     ]:
         st.session_state.pop(k, None)
     # clear caches
-    for k in list(st.session_state.keys()):
-        if str(k).startswith("dashboard:") or str(k).startswith("img_insights:"):
-            st.session_state.pop(k, None)
+    for kk in list(st.session_state.keys()):
+        if str(kk).startswith(("dashboard:", "img_insights:", "dates:")):
+            st.session_state.pop(kk, None)
     st.rerun()
 
 def build_index_if_needed(full_text: str, chunk_size: int, overlap: int):
@@ -431,7 +386,7 @@ if mode == "Single Document":
             st.subheader("Insights")
             st.markdown(insights.replace("\n", "  \n"))
 
-        # OCR for retrieval only (do not show)
+        # OCR for retrieval + dashboard
         try:
             ocr_text = nova_image_to_text(img_bytes, image_format="png")
         except Exception:
@@ -448,11 +403,10 @@ if mode == "Single Document":
 
     full_text = "\n\n".join(full_text_parts)
 
-    # ✅ IMPORTANT: compute doc_fp BEFORE dashboard / caching
+    # ✅ doc fingerprint (used for caching)
     doc_fp = hashlib.md5(full_text[:20000].encode("utf-8", errors="ignore")).hexdigest()
-    local_dates = extract_dates_with_events(full_text, max_items=120)
 
-    # ✅ Cache date extraction (prevents “needs refresh” issue)
+    # ✅ Cache dates (prevents refresh issues)
     dates_key = f"dates:{doc_fp}"
     if dates_key not in st.session_state:
         st.session_state[dates_key] = extract_dates_with_events(full_text, max_items=120)
@@ -462,30 +416,30 @@ if mode == "Single Document":
     # 📊 Executive Dashboard (Dynamic)
     # ========================
     st.subheader("📊 Executive Dashboard")
-    
+
     dash_key = f"dashboard:{doc_fp}"
     dcol1, dcol2 = st.columns([1, 5])
     with dcol1:
         if st.button("🔄 Refresh Dashboard", use_container_width=True):
             st.session_state.pop(dash_key, None)
-    
+
     if dash_key not in st.session_state:
         with st.spinner("Analyzing document for dashboard insights..."):
             st.session_state[dash_key] = generate_dashboard_insights_dynamic(full_text)
-    
+
     dashboard = st.session_state.get(dash_key, {}) or {}
-    
+
     summary = dashboard.get("summary", "")
     doc_type_guess = dashboard.get("doc_type_guess", "generic")
     risk_score = int(dashboard.get("risk_score", 0) or 0)
-    
+
     kpis = dashboard.get("kpis", []) or []
     derived = dashboard.get("derived_insights", []) or []
     charts = dashboard.get("charts", []) or []
     table_preview = dashboard.get("table_preview", []) or []
     risks = dashboard.get("risks", []) or []
     next_actions = dashboard.get("next_actions", []) or []
-    
+
     # --- Top Row
     c1, c2, c3 = st.columns(3)
     c1.metric("Doc Type (Nova)", str(doc_type_guess))
@@ -493,12 +447,12 @@ if mode == "Single Document":
     with c3:
         st.caption("Risk Meter")
         st.progress(min(max(risk_score, 0), 100))
-    
+
     # --- Summary
     if summary.strip():
         st.markdown("### 🧾 Executive Summary")
         st.markdown(summary)
-    
+
     # --- KPIs
     if kpis:
         st.markdown("### 🔑 KPIs")
@@ -510,13 +464,13 @@ if mode == "Single Document":
                     kpi.get("value", "-"),
                     kpi.get("note", "")[:40] if kpi.get("note") else None
                 )
-    
+
     # --- Derived Insights
     if derived:
         st.markdown("### ✨ Derived Insights")
         for d in derived[:10]:
             st.markdown(f"- {d}")
-    
+
     # --- Charts
     if charts:
         st.markdown("### 📈 Auto Charts")
@@ -524,14 +478,14 @@ if mode == "Single Document":
             title = ch.get("title", "Chart")
             ctype = ch.get("type", "bar")
             data = ch.get("data", []) or []
-    
+
             st.markdown(f"**{title}**")
             if data:
                 dfc = pd.DataFrame(data)
                 if "x" in dfc.columns and "y" in dfc.columns:
                     dfc["x"] = dfc["x"].astype(str)
                     dfc["y"] = pd.to_numeric(dfc["y"], errors="coerce").fillna(0)
-    
+
                     if ctype == "line":
                         st.line_chart(dfc.set_index("x")[["y"]])
                     else:
@@ -540,23 +494,31 @@ if mode == "Single Document":
                     st.dataframe(dfc, use_container_width=True)
             else:
                 st.caption("No chart data available.")
-    
+
     # --- Table preview
     if table_preview:
         st.markdown("### 🧩 Table Preview")
         st.dataframe(pd.DataFrame(table_preview), use_container_width=True)
-    
+
+    # --- Key Dates Timeline (deterministic)
+    st.markdown("### 🗓️ Key Dates Timeline (AI Structured)")
+    if local_dates:
+        df_dates = pd.DataFrame(local_dates).rename(columns={"label": "Event", "value": "Date"})
+        st.dataframe(df_dates, use_container_width=True)
+    else:
+        st.caption("No dates detected in the document.")
+
     # --- Risks + Actions
     if risks:
         st.markdown("### ⚠️ Risks")
         for r in risks[:8]:
             st.markdown(f"- {r}")
-    
+
     if next_actions:
         st.markdown("### ✅ Next Actions")
         for a in next_actions[:8]:
             st.markdown(f"- {a}")
-    
+
     st.divider()
 
     # Auto settings per doc
@@ -611,13 +573,15 @@ if mode == "Single Document":
             st.session_state["suggested_questions"] = suggest_questions(full_text, user_interest=user_interest, n=6)
 
     qs = st.session_state.get("suggested_questions", [])
+
     if qs:
         cols = st.columns(3)
         for i, q in enumerate(qs):
             with cols[i % 3]:
+                # ✅ IMPORTANT: rerun so chat section executes immediately
                 if st.button(q, use_container_width=True, key=f"dynq_{doc_fp}_{i}"):
                     st.session_state["pending_question"] = q
-                    
+                    st.rerun()
     else:
         st.caption("Suggestions unavailable for this upload.")
 
@@ -632,13 +596,12 @@ if mode == "Single Document":
     st.subheader("3) Chat with your document")
     st.markdown("#### 💬 Ask a question")
 
-    # Auto-run if a suggestion was clicked
-    if "pending_question" in st.session_state:
-        user_q = st.session_state.pop("pending_question")
-        if user_q:
-            run_single_question(user_q, top_k=top_k)
+    # ✅ Auto-run if a suggestion was clicked
+    pending = st.session_state.pop("pending_question", "")
+    if pending:
+        run_single_question(pending, top_k=top_k)
 
-
+    # Manual input
     with st.form("ask_form", clear_on_submit=True):
         q_text = st.text_input(
             "Type your question",
@@ -650,6 +613,7 @@ if mode == "Single Document":
     if ask_clicked and q_text.strip():
         run_single_question(q_text.strip(), top_k=top_k)
 
+    # Show ONLY latest output
     if st.session_state.get("latest_answer"):
         st.markdown("### ✅ Latest Answer")
         st.markdown(f"**Question:** {st.session_state.get('latest_q','')}")
@@ -756,10 +720,3 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
-
-
-
-
-
-
-
