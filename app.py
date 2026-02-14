@@ -595,7 +595,7 @@ if mode == "Single Document":
             with cols[i % 3]:
                 if st.button(q, use_container_width=True, key=f"dynq_{doc_fp}_{i}"):
                     st.session_state["pending_question"] = q
-                    st.rerun()
+                    
     else:
         st.caption("Suggestions unavailable for this upload.")
 
@@ -731,6 +731,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
