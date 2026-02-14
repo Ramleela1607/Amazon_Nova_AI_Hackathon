@@ -548,86 +548,50 @@ Document excerpt:
 # -------------------------
 # Nova Executive Dashboard Insights
 # -------------------------
-def generate_dashboard_insights(doc_text: str) -> dict:
-    """
-    Generate structured dashboard insights using Nova.
-    Returns strict JSON with:
-    - summary
-    - doc_type_guess
-    - risk_score
-    - key_numbers [{label,value}]
-    - key_dates [{label,value}]
-    - risks [str]
-    - next_actions [str]
-    """
-
-    brt = get_bedrock_runtime(GEN_REGION)
-
-    excerpt = (doc_text or "").strip()
-    excerpt = excerpt[:15000]
-
-    prompt = f"""
-You are an executive document intelligence system.
-
-Analyze the document and return STRICT JSON only.
-
-Required JSON format:
-
-{{
-  "summary": "2-4 sentence executive summary",
-  "doc_type_guess": "invoice | contract | resume | research_paper | generic",
-  "risk_score": 0-100,
-  "key_numbers": [
-    {{"label": "Metric name", "value": "exact visible value"}}
-  ],
-  "key_dates": [
-    {{"label": "Event name", "value": "exact date string"}}
-  ],
-  "risks": ["short risk statement"],
-  "next_actions": ["short action recommendation"]
-}}
-
-Rules:
-- Output VALID JSON only.
-- Do not include markdown.
-- Do not include commentary.
-- key_dates must pair a real event with a real visible date.
-- risk_score must reflect financial, legal, deadline, or compliance risk.
-- If something does not exist, return empty list.
-- Do NOT hallucinate.
-
-Document:
-{excerpt}
-""".strip()
-
-    resp = brt.converse(
-        modelId=NOVA_LITE_MODEL_ID,
-        messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": 800, "temperature": 0.2, "topP": 0.9},
-    )
-
-    raw = resp["output"]["message"]["content"][0]["text"].strip()
-
-    # Clean possible formatting issues
-    try:
-        start = raw.find("{")
-        end = raw.rfind("}")
-        cleaned = raw[start:end+1]
-        return json.loads(cleaned)
-    except Exception:
-        return {
-            "summary": "",
-            "doc_type_guess": "generic",
-            "risk_score": 0,
-            "key_numbers": [],
-            "key_dates": [],
-            "risks": [],
-            "next_actions": [],
-        }
-
+# bedrock_utils.py
 import re
 import json
 from typing import Dict, Any, List
+
+# make sure these already exist in your file:
+# GEN_REGION = "ap-south-1"
+# NOVA_LITE_MODEL_ID = "apac.amazon.nova-lite-v1:0"
+# def get_bedrock_runtime(region: str): ...
+
+def _strip_code_fences(s: str) -> str:
+    s = (s or "").strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", s)
+        s = re.sub(r"\s*```$", "", s)
+    return s.strip()
+
+def _safe_json_loads(txt: str) -> Dict[str, Any] | None:
+    """Try hard to parse JSON dict from model output."""
+    if not txt:
+        return None
+    txt = _strip_code_fences(txt)
+
+    # 1) strict
+    try:
+        out = json.loads(txt)
+        if isinstance(out, dict):
+            return out
+    except Exception:
+        pass
+
+    # 2) salvage substring
+    try:
+        start = txt.find("{")
+        end = txt.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            out = json.loads(txt[start:end + 1])
+            if isinstance(out, dict):
+                return out
+    except Exception:
+        pass
+
+    return None
+
 
 def generate_dashboard_insights_dynamic(doc_text: str, max_metrics: int = 40) -> Dict[str, Any]:
     """
@@ -636,29 +600,39 @@ def generate_dashboard_insights_dynamic(doc_text: str, max_metrics: int = 40) ->
     - Returns strict JSON for charts + insights
     """
 
+    # ✅ Guard: empty text => return fallback (prevents Nova call on nothing)
+    text = (doc_text or "").strip()
+    if len(text) < 40:
+        return {
+            "doc_type_guess": "generic",
+            "summary": "Not enough readable text extracted. If this is a scanned PDF, enable OCR fallback.",
+            "kpis": [],
+            "derived_insights": [],
+            "charts": [],
+            "table_preview": [],
+            "risk_score": 0,
+            "risks": [],
+            "next_actions": [],
+        }
+
     brt = get_bedrock_runtime(GEN_REGION)
 
-    # --- Local mining (deterministic) ---
-    text = (doc_text or "").strip()
+    # --- Normalize ---
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{2,}", "\n", text)
 
-    # Extract "label: value" style metrics (very common in invoices/reports)
-    metric_candidates = []
+    # --- Local mining 1: "Label: value" ---
+    metric_candidates: List[Dict[str, str]] = []
     for line in text.splitlines():
         ln = line.strip()
         if not ln or len(ln) < 4:
             continue
-        # pattern: Label ... 1234.56 (or $1,234 / 45% / INR 5000)
         m = re.search(r"(.{3,60}?)\s*[:\-–—]\s*([^\n]{1,40})$", ln)
         if m:
-            label = m.group(1).strip()
-            val = m.group(2).strip()
-            metric_candidates.append({"label": label, "value": val})
+            metric_candidates.append({"label": m.group(1).strip(), "value": m.group(2).strip()})
 
-    # Also grab “numbers with nearby words” (fallback for tables/OCR)
-    # Example: "Total 4950", "Due Date 14/02/2023", etc.
-    loose_candidates = []
+    # --- Local mining 2: loose numbers with nearby words (tables/OCR) ---
+    loose_candidates: List[Dict[str, str]] = []
     num_re = re.compile(r"(-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?)")
     for line in text.splitlines():
         ln = line.strip()
@@ -669,32 +643,19 @@ def generate_dashboard_insights_dynamic(doc_text: str, max_metrics: int = 40) ->
             continue
         for mm in nums[:3]:
             num = mm.group(1)
-            left = ln[:mm.start()].strip()
-            left = re.sub(r"\s+", " ", left)
-            # take last few words as label
+            left = re.sub(r"\s+", " ", ln[:mm.start()].strip())
             words = left.split()
             label = " ".join(words[-6:]) if words else "Number"
             loose_candidates.append({"label": label, "value": num})
 
-    # Compact the input (so Nova gets signals not full doc)
     metric_candidates = metric_candidates[:max_metrics]
     loose_candidates = loose_candidates[:max_metrics]
-
-    # Try to pass a small excerpt too (for summary/doc type)
-    excerpt = text[:9000] if len(text) > 9000 else text
+    excerpt = text[:9000]
 
     prompt = f"""
 You are an Executive Dashboard generator for ANY document.
 
-You will receive:
-1) Raw excerpt (may contain tables)
-2) Candidate metrics (label/value)
-3) Loose numeric signals (label/value)
-
-Your job:
-- Return ONLY valid JSON (no markdown/backticks)
-- Detect what kind of document this is
-- Produce a dashboard with KPIs, derived calculations, and chart-ready data
+Return ONLY valid JSON (no markdown/backticks).
 
 Return JSON with EXACT keys:
 {{
@@ -719,15 +680,14 @@ Return JSON with EXACT keys:
 
 Rules:
 - Use ONLY what is supported by text/signals (no invention).
-- If you detect a table-like structure, summarize it and put a small preview in table_preview.
 - KPIs: select the most important 6–10 values.
 - Derived calculations MUST be dynamic:
-  - compute min/max/avg when there are multiple numbers
-  - compute deltas / % change when pairs/series exist
-  - flag anomalies (outliers / sudden jumps) if patterns exist
+  - min/max/avg when there are multiple numbers
+  - deltas / % change when pairs/series exist
+  - anomalies if outliers exist
 - Charts MUST be dynamic:
-  - If many numeric items exist -> bar chart of top values
-  - If series (like stages/months/years) exist -> line chart
+  - If many numeric items -> bar chart of top values
+  - If series (stages/months/years) -> line chart
 - risk_score 0–100 based on risks detected.
 
 RAW EXCERPT:
@@ -740,35 +700,45 @@ LOOSE NUMERIC SIGNALS (label/value):
 {json.dumps(loose_candidates, ensure_ascii=False)}
 """.strip()
 
-    resp = brt.converse(
-        modelId=NOVA_LITE_MODEL_ID,
-        messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": 1000, "temperature": 0.15, "topP": 0.9},
-    )
-
-    txt = (resp["output"]["message"]["content"][0]["text"] or "").strip()
-
-    # Robust JSON parse
     try:
-        out = json.loads(txt)
-        if isinstance(out, dict):
-            return out
+        resp = brt.converse(
+            modelId=NOVA_LITE_MODEL_ID,
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
+            inferenceConfig={"maxTokens": 1000, "temperature": 0.15, "topP": 0.9},
+        )
+        txt = (resp["output"]["message"]["content"][0]["text"] or "").strip()
     except Exception:
-        # Try to salvage if extra text around JSON
-        try:
-            start = txt.find("{")
-            end = txt.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                out = json.loads(txt[start:end+1])
-                if isinstance(out, dict):
-                    return out
-        except Exception:
-            pass
+        # Bedrock call failed (permissions/region/etc.)
+        return {
+            "doc_type_guess": "generic",
+            "summary": "Dashboard generation failed (Bedrock call error). Check logs for Bedrock runtime exception.",
+            "kpis": [],
+            "derived_insights": [],
+            "charts": [],
+            "table_preview": [],
+            "risk_score": 0,
+            "risks": [],
+            "next_actions": [],
+        }
+
+    out = _safe_json_loads(txt)
+    if isinstance(out, dict):
+        # Ensure required keys exist even if model omitted some
+        out.setdefault("doc_type_guess", "generic")
+        out.setdefault("summary", "")
+        out.setdefault("kpis", [])
+        out.setdefault("derived_insights", [])
+        out.setdefault("charts", [])
+        out.setdefault("table_preview", [])
+        out.setdefault("risk_score", 0)
+        out.setdefault("risks", [])
+        out.setdefault("next_actions", [])
+        return out
 
     # fallback
     return {
         "doc_type_guess": "generic",
-        "summary": "Dashboard could not be generated for this upload.",
+        "summary": "Dashboard could not be generated for this upload (invalid JSON from model).",
         "kpis": [],
         "derived_insights": [],
         "charts": [],
@@ -777,3 +747,4 @@ LOOSE NUMERIC SIGNALS (label/value):
         "risks": [],
         "next_actions": [],
     }
+
