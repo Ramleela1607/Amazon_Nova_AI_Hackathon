@@ -518,10 +518,11 @@ if mode == "Single Document":
     # ✅ Key Dates Timeline (AI Structured) using deterministic extraction
     st.markdown("### 🗓️ Key Dates Timeline (AI Structured)")
     if local_dates:
-        df_dates = pd.DataFrame(local_dates)
+        df_dates = pd.DataFrame(local_dates).rename(columns={"label": "Event", "value": "Date"})
         st.dataframe(df_dates, use_container_width=True)
     else:
         st.caption("No dates detected in the document.")
+
 
     if risks:
         st.markdown("### ⚠️ Risks")
@@ -729,4 +730,5 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
