@@ -610,9 +610,12 @@ if mode == "Single Document":
     st.subheader("3) Chat with your document")
     st.markdown("#### 💬 Ask a question")
 
-    pending = st.session_state.pop("pending_question", "")
-    if pending:
-        run_single_question(pending, top_k=top_k)
+    # Auto-run if a suggestion was clicked
+    if "pending_question" in st.session_state:
+        user_q = st.session_state.pop("pending_question")
+        if user_q:
+            run_single_question(user_q, top_k=top_k)
+
 
     with st.form("ask_form", clear_on_submit=True):
         q_text = st.text_input(
@@ -731,6 +734,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
