@@ -428,7 +428,11 @@ if mode == "Single Document":
 
     if dash_key not in st.session_state:
         with st.spinner("Analyzing document for dashboard insights..."):
-            st.session_state[dash_key] = generate_dashboard_insights_dynamic(full_text)
+            try:
+                st.session_state[dash_key] = generate_dashboard_insights_dynamic(full_text)
+            except Exception as e:
+                st.exception(e)   # shows full traceback in UI
+                st.stop()
 
     dashboard = st.session_state.get(dash_key, {}) or {}
 
@@ -699,3 +703,4 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
