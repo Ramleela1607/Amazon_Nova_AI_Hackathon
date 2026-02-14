@@ -6,3 +6,4 @@ pillow
 faiss-cpu
 numpy
 reportlab
+pymupdf
