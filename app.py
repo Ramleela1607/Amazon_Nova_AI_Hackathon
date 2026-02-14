@@ -449,6 +449,7 @@ if mode == "Single Document":
 
     # ✅ IMPORTANT: compute doc_fp BEFORE dashboard / caching
     doc_fp = hashlib.md5(full_text[:20000].encode("utf-8", errors="ignore")).hexdigest()
+    local_dates = extract_dates_with_events(full_text, max_items=120)
 
     # ✅ Cache date extraction (prevents “needs refresh” issue)
     dates_key = f"dates:{doc_fp}"
@@ -730,5 +731,6 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
