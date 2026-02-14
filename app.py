@@ -459,83 +459,104 @@ if mode == "Single Document":
     local_dates = st.session_state.get(dates_key, [])
 
     # ========================
-    # 📊 Executive Dashboard
+    # 📊 Executive Dashboard (Dynamic)
     # ========================
     st.subheader("📊 Executive Dashboard")
+    
     dash_key = f"dashboard:{doc_fp}"
-
-    dcol1, _ = st.columns([1, 5])
+    dcol1, dcol2 = st.columns([1, 5])
     with dcol1:
         if st.button("🔄 Refresh Dashboard", use_container_width=True):
             st.session_state.pop(dash_key, None)
-            st.session_state.pop(dates_key, None)
-            st.rerun()
-
+    
     if dash_key not in st.session_state:
         with st.spinner("Analyzing document for dashboard insights..."):
-            st.session_state[dash_key] = generate_dashboard_insights(full_text)
-
+            st.session_state[dash_key] = generate_dashboard_insights_dynamic(full_text)
+    
     dashboard = st.session_state.get(dash_key, {}) or {}
-
+    
     summary = dashboard.get("summary", "")
     doc_type_guess = dashboard.get("doc_type_guess", "generic")
     risk_score = int(dashboard.get("risk_score", 0) or 0)
-    key_numbers = dashboard.get("key_numbers", []) or []
+    
+    kpis = dashboard.get("kpis", []) or []
+    derived = dashboard.get("derived_insights", []) or []
+    charts = dashboard.get("charts", []) or []
+    table_preview = dashboard.get("table_preview", []) or []
     risks = dashboard.get("risks", []) or []
     next_actions = dashboard.get("next_actions", []) or []
-
+    
+    # --- Top Row
     c1, c2, c3 = st.columns(3)
     c1.metric("Doc Type (Nova)", str(doc_type_guess))
     c2.metric("Risk Score", f"{risk_score}/100")
     with c3:
         st.caption("Risk Meter")
         st.progress(min(max(risk_score, 0), 100))
-
+    
+    # --- Summary
     if summary.strip():
         st.markdown("### 🧾 Executive Summary")
         st.markdown(summary)
-
-    numeric_rows = []
-    for it in key_numbers:
-        label = (it or {}).get("label", "").strip()
-        val = (it or {}).get("value", "")
-        num = try_parse_number(val)
-        if label and num is not None:
-            numeric_rows.append({"label": label, "value": num, "raw": str(val)})
-
-    if numeric_rows:
-        st.markdown("### 📈 Key Numbers (Chart)")
-        df = pd.DataFrame(numeric_rows).sort_values("value", ascending=False)
-        st.bar_chart(df.set_index("label")[["value"]])
-        with st.expander("Numbers (raw)", expanded=False):
-            st.dataframe(df[["label", "raw"]], use_container_width=True)
-    else:
-        if key_numbers:
-            st.markdown("### 📌 Key Numbers")
-            for it in key_numbers[:6]:
-                st.markdown(f"- **{it.get('label','Metric')}**: {it.get('value','-')}")
-        else:
-            st.caption("No key numeric metrics detected for charting.")
-
-    # ✅ Key Dates Timeline (AI Structured) using deterministic extraction
-    st.markdown("### 🗓️ Key Dates Timeline (AI Structured)")
-    if local_dates:
-        df_dates = pd.DataFrame(local_dates).rename(columns={"label": "Event", "value": "Date"})
-        st.dataframe(df_dates, use_container_width=True)
-    else:
-        st.caption("No dates detected in the document.")
-
-
+    
+    # --- KPIs
+    if kpis:
+        st.markdown("### 🔑 KPIs")
+        kpi_cols = st.columns(3)
+        for i, kpi in enumerate(kpis[:9]):
+            with kpi_cols[i % 3]:
+                st.metric(
+                    kpi.get("label", "KPI"),
+                    kpi.get("value", "-"),
+                    kpi.get("note", "")[:40] if kpi.get("note") else None
+                )
+    
+    # --- Derived Insights
+    if derived:
+        st.markdown("### ✨ Derived Insights")
+        for d in derived[:10]:
+            st.markdown(f"- {d}")
+    
+    # --- Charts
+    if charts:
+        st.markdown("### 📈 Auto Charts")
+        for ch in charts[:4]:
+            title = ch.get("title", "Chart")
+            ctype = ch.get("type", "bar")
+            data = ch.get("data", []) or []
+    
+            st.markdown(f"**{title}**")
+            if data:
+                dfc = pd.DataFrame(data)
+                if "x" in dfc.columns and "y" in dfc.columns:
+                    dfc["x"] = dfc["x"].astype(str)
+                    dfc["y"] = pd.to_numeric(dfc["y"], errors="coerce").fillna(0)
+    
+                    if ctype == "line":
+                        st.line_chart(dfc.set_index("x")[["y"]])
+                    else:
+                        st.bar_chart(dfc.set_index("x")[["y"]])
+                else:
+                    st.dataframe(dfc, use_container_width=True)
+            else:
+                st.caption("No chart data available.")
+    
+    # --- Table preview
+    if table_preview:
+        st.markdown("### 🧩 Table Preview")
+        st.dataframe(pd.DataFrame(table_preview), use_container_width=True)
+    
+    # --- Risks + Actions
     if risks:
         st.markdown("### ⚠️ Risks")
-        for r in risks[:6]:
+        for r in risks[:8]:
             st.markdown(f"- {r}")
-
+    
     if next_actions:
         st.markdown("### ✅ Next Actions")
-        for a in next_actions[:6]:
+        for a in next_actions[:8]:
             st.markdown(f"- {a}")
-
+    
     st.divider()
 
     # Auto settings per doc
@@ -735,6 +756,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
