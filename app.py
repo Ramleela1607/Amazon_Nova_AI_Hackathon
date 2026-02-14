@@ -24,7 +24,7 @@ from bedrock_utils import (
     nova_image_insights_brief,
     generate_report_title,
     suggest_questions,
-    generate_dashboard_insights_dynamic,  # ✅ use dynamic dashboard
+    generate_dashboard_insights_dynamic,
 )
 
 # ---------- Page ----------
@@ -33,9 +33,6 @@ st.set_page_config(page_title="Smart Document Copilot", layout="wide")
 # ---------- Premium UI ----------
 st.markdown("""
 <style>
-/* ----------------------------
-   VIDEO-LIKE ANIMATED BACKGROUND
-   ---------------------------- */
 .stApp {
   background: radial-gradient(circle at 10% 20%, rgba(224,242,254,0.95), transparent 45%),
               radial-gradient(circle at 90% 10%, rgba(252,231,243,0.92), transparent 45%),
@@ -52,7 +49,6 @@ st.markdown("""
   inset: 0;
   z-index: 0;
   pointer-events: none;
-
   background:
     radial-gradient(circle at 15% 35%, rgba(99,102,241,0.22), transparent 40%),
     radial-gradient(circle at 75% 20%, rgba(16,185,129,0.18), transparent 40%),
@@ -67,8 +63,6 @@ st.markdown("""
   50%  { transform: translate3d(24px, 16px, 0) scale(1.06); }
   100% { transform: translate3d(-10px, 26px, 0) scale(1.03); }
 }
-
-/* Everything above background layer */
 .block-container,
 section[data-testid="stSidebar"],
 header,
@@ -77,56 +71,33 @@ div[data-testid="stAppViewContainer"]{
   position: relative;
   z-index: 1;
 }
-
-/* Make ALL text readable */
-html, body, [class*="css"], p, span, div {
-  color: #0f172a !important;
-}
-
-/* Sidebar: frosted glass */
+html, body, [class*="css"], p, span, div { color: #0f172a !important; }
 section[data-testid="stSidebar"]{
   background: rgba(255,255,255,0.78) !important;
   backdrop-filter: blur(14px);
   border-right: 1px solid rgba(15,23,42,0.10);
 }
-section[data-testid="stSidebar"] *{
-  color: #0f172a !important;
-}
-
-/* Titles / headers clarity */
-h1, h2, h3 {
-  color: #0b1220 !important;
-  text-shadow: 0 1px 0 rgba(255,255,255,0.65);
-}
-
-/* Expanders */
+section[data-testid="stSidebar"] *{ color: #0f172a !important; }
+h1, h2, h3 { color: #0b1220 !important; text-shadow: 0 1px 0 rgba(255,255,255,0.65); }
 div[data-testid="stExpander"] {
   border-radius: 18px;
   border: 1px solid rgba(15,23,42,0.10);
   background: rgba(255,255,255,0.86);
   box-shadow: 0 10px 24px rgba(2,6,23,0.07);
 }
-
-/* Chat bubbles */
 div[data-testid="stChatMessage"]{
   background: rgba(255,255,255,0.90);
   border: 1px solid rgba(15,23,42,0.10);
   border-radius: 18px;
   box-shadow: 0 10px 22px rgba(2,6,23,0.06);
 }
-div[data-testid="stChatMessage"] *{
-  color: #0f172a !important;
-}
-
-/* Inputs */
+div[data-testid="stChatMessage"] *{ color: #0f172a !important; }
 div[data-baseweb="input"] input, textarea {
   background: rgba(255,255,255,0.94) !important;
   color: #0f172a !important;
   border-radius: 14px !important;
   border: 1px solid rgba(15,23,42,0.16) !important;
 }
-
-/* Buttons */
 .stButton button {
   border-radius: 14px;
   border: 1px solid rgba(15,23,42,0.14);
@@ -140,7 +111,6 @@ div[data-baseweb="input"] input, textarea {
   border: 1px solid rgba(99,102,241,0.45);
   box-shadow: 0 10px 26px rgba(99,102,241,0.18);
 }
-
 a { color: #1d4ed8 !important; }
 .block-container { padding-top: 1.1rem; }
 </style>
@@ -154,14 +124,6 @@ st.markdown(
 )
 
 # ---------- Helpers ----------
-def extract_text_from_pdf(file) -> str:
-    reader = PdfReader(file)
-    texts = []
-    for i, page in enumerate(reader.pages):
-        page_text = page.extract_text() or ""
-        texts.append(f"\n\n--- Page {i+1} ---\n{page_text}")
-    return "".join(texts)
-
 def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150):
     chunks = []
     start = 0
@@ -173,17 +135,72 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150):
         start += max(1, chunk_size - overlap)
     return chunks
 
-MONTHS_RE = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*"
+def extract_text_from_pdf_basic(file) -> str:
+    """Best-effort extraction using pypdf (works for digital PDFs)."""
+    reader = PdfReader(file)
+    texts = []
+    for i, page in enumerate(reader.pages):
+        page_text = page.extract_text() or ""
+        if page_text.strip():
+            texts.append(f"\n\n--- Page {i+1} ---\n{page_text}")
+    return "".join(texts)
+
+def pdf_pages_to_png_bytes(pdf_bytes: bytes, max_pages: int = 6):
+    """
+    Render PDF pages to PNG bytes using PyMuPDF if available.
+    Works on scanned PDFs / table PDFs.
+    """
+    try:
+        import fitz  # PyMuPDF
+    except Exception:
+        return []
+
+    pages = []
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    for i in range(min(max_pages, doc.page_count)):
+        page = doc.load_page(i)
+        pix = page.get_pixmap(dpi=180)
+        pages.append(pix.tobytes("png"))
+    return pages
+
+def extract_text_from_pdf_with_ocr(uploaded_pdf, max_ocr_pages: int = 6) -> str:
+    """
+    1) Try pypdf text extraction
+    2) If too little text, OCR first N pages by rendering to images and using nova_image_to_text
+    """
+    pdf_bytes = uploaded_pdf.getvalue()
+    cache_key = "pdf_text:" + hashlib.md5(pdf_bytes[:200000]).hexdigest()
+
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+
+    # 1) digital text
+    basic_text = extract_text_from_pdf_basic(io.BytesIO(pdf_bytes))
+    basic_len = len((basic_text or "").strip())
+
+    # 2) OCR fallback if almost empty
+    if basic_len < 200:
+        ocr_parts = []
+        page_pngs = pdf_pages_to_png_bytes(pdf_bytes, max_pages=max_ocr_pages)
+        if page_pngs:
+            with st.spinner(f"🧠 OCR on scanned/table PDF (first {len(page_pngs)} pages)..."):
+                for idx, png_bytes in enumerate(page_pngs, start=1):
+                    try:
+                        t = nova_image_to_text(png_bytes, image_format="png")
+                    except Exception:
+                        t = ""
+                    if t.strip():
+                        ocr_parts.append(f"\n\n--- OCR Page {idx} ---\n{t}")
+        combined = (basic_text or "") + ("\n\n" + "\n".join(ocr_parts) if ocr_parts else "")
+        st.session_state[cache_key] = combined
+        return combined
+
+    st.session_state[cache_key] = basic_text
+    return basic_text
 
 def extract_dates_with_events(text: str, max_items: int = 120):
     """
-    Robust date extraction for PDF/OCR text.
-    Handles:
-      - ranges: "Aug 2023 - Present", "Jan 2020 - Aug 2023"
-      - month-year: "Aug 2023"
-      - iso: "2024-05-12"
-      - slash: "12/05/2024"
-      - long form: "May 12, 2024" / "12 May 2024"
+    Robust date extraction for PDF/OCR text including ranges.
     Returns: [{"label": event, "value": date_or_range}, ...]
     """
     if not text or not str(text).strip():
@@ -191,10 +208,10 @@ def extract_dates_with_events(text: str, max_items: int = 120):
 
     t = str(text)
     t = t.replace("\r", "\n")
-    t = t.replace("\u2013", "-").replace("\u2014", "-")  # en/em dash -> hyphen
+    t = t.replace("\u2013", "-").replace("\u2014", "-")
     t = re.sub(r"[ \t]+", " ", t)
     t = re.sub(r"\n{2,}", "\n", t)
-    t = re.sub(r"(\d{1,2})\s*\n\s*([A-Za-z]{3,9})\s*\n\s*(\d{2,4})", r"\1 \2 \3", t)  # 12\nMay\n2024
+    t = re.sub(r"(\d{1,2})\s*\n\s*([A-Za-z]{3,9})\s*\n\s*(\d{2,4})", r"\1 \2 \3", t)
     t = re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", t, flags=re.IGNORECASE)
 
     months = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*"
@@ -208,7 +225,6 @@ def extract_dates_with_events(text: str, max_items: int = 120):
     date_re = re.compile("|".join([p_range, p_iso, p_slash, p_mdy, p_dmy, p_my]), re.IGNORECASE)
 
     results, seen = [], set()
-
     for line in t.split("\n"):
         ln = line.strip()
         if not ln:
@@ -218,11 +234,9 @@ def extract_dates_with_events(text: str, max_items: int = 120):
             event = ln[:m.start()].strip()
             if not event:
                 event = ln[m.end():].strip()
-
             event = re.sub(r"\s+", " ", event).strip(" -:•;|")
             if not event:
                 event = "Date mentioned"
-
             words = event.split()
             if len(words) > 16:
                 event = " ".join(words[-16:])
@@ -231,26 +245,12 @@ def extract_dates_with_events(text: str, max_items: int = 120):
             if key in seen:
                 continue
             seen.add(key)
-
             results.append({"label": event, "value": date_str})
             if len(results) >= max_items:
                 break
         if len(results) >= max_items:
             break
-
     return results
-
-def try_parse_number(value: str):
-    if value is None:
-        return None
-    s = str(value).strip().replace(",", "")
-    m = re.search(r"(-?\d+(\.\d+)?)", s)
-    if not m:
-        return None
-    try:
-        return float(m.group(1))
-    except Exception:
-        return None
 
 def make_pdf_report(filename: str, title: str, sections: list[tuple[str, str]]) -> bytes:
     styles = getSampleStyleSheet()
@@ -283,9 +283,10 @@ def reset_session():
         "pending_question",
     ]:
         st.session_state.pop(k, None)
+
     # clear caches
     for kk in list(st.session_state.keys()):
-        if str(kk).startswith(("dashboard:", "img_insights:", "dates:")):
+        if str(kk).startswith(("dashboard:", "img_insights:", "dates:", "pdf_text:")):
             st.session_state.pop(kk, None)
     st.rerun()
 
@@ -334,7 +335,6 @@ st.session_state.setdefault("uploader_key", 0)
 # ---------- Sidebar ----------
 st.sidebar.header("⚙️ Controls")
 st.sidebar.button("🔄 Reset / New session", on_click=reset_session, use_container_width=True)
-
 mode = st.sidebar.radio("Mode", ["Single Document", "Compare Two Documents"])
 
 user_interest = st.sidebar.selectbox(
@@ -361,12 +361,13 @@ if mode == "Single Document":
 
     full_text_parts = []
 
-    # PDF
+    # PDF (with OCR fallback)
     if uploaded_pdf is not None:
-        pdf_text = extract_text_from_pdf(uploaded_pdf)
-        full_text_parts.append("=== PDF TEXT ===\n" + pdf_text)
+        pdf_text = extract_text_from_pdf_with_ocr(uploaded_pdf, max_ocr_pages=6)
+        if pdf_text.strip():
+            full_text_parts.append("=== PDF TEXT ===\n" + pdf_text)
 
-    # Image: cache insights + internal OCR (not shown)
+    # Image (OCR + cached insights)
     if uploaded_img is not None:
         img_rgb = Image.open(uploaded_img).convert("RGB")
         buf = io.BytesIO()
@@ -381,12 +382,10 @@ if mode == "Single Document":
                 st.session_state[img_cache_key] = nova_image_insights_brief(img_bytes, image_format="png")
 
         insights = st.session_state.get(img_cache_key, "")
-
         if insights.strip():
             st.subheader("Insights")
             st.markdown(insights.replace("\n", "  \n"))
 
-        # OCR for retrieval + dashboard
         try:
             ocr_text = nova_image_to_text(img_bytes, image_format="png")
         except Exception:
@@ -397,28 +396,32 @@ if mode == "Single Document":
         if insights.strip():
             full_text_parts.append("=== IMAGE INSIGHTS ===\n" + insights)
 
-    # Notes
     if user_text.strip():
         full_text_parts.append("=== USER NOTES ===\n" + user_text.strip())
 
     full_text = "\n\n".join(full_text_parts)
 
-    # ✅ doc fingerprint (used for caching)
+    # ---- DEBUG (helps you see if PDF OCR worked)
+    with st.expander("🔎 Debug: extracted text length", expanded=False):
+        st.write("Characters in full_text:", len(full_text))
+        st.write("Preview:", (full_text[:800] + "...") if len(full_text) > 800 else full_text)
+
+    # fingerprint
     doc_fp = hashlib.md5(full_text[:20000].encode("utf-8", errors="ignore")).hexdigest()
 
-    # ✅ Cache dates (prevents refresh issues)
+    # cache dates
     dates_key = f"dates:{doc_fp}"
     if dates_key not in st.session_state:
         st.session_state[dates_key] = extract_dates_with_events(full_text, max_items=120)
     local_dates = st.session_state.get(dates_key, [])
 
     # ========================
-    # 📊 Executive Dashboard (Dynamic)
+    # 📊 Executive Dashboard
     # ========================
     st.subheader("📊 Executive Dashboard")
-
     dash_key = f"dashboard:{doc_fp}"
-    dcol1, dcol2 = st.columns([1, 5])
+
+    dcol1, _ = st.columns([1, 5])
     with dcol1:
         if st.button("🔄 Refresh Dashboard", use_container_width=True):
             st.session_state.pop(dash_key, None)
@@ -440,7 +443,6 @@ if mode == "Single Document":
     risks = dashboard.get("risks", []) or []
     next_actions = dashboard.get("next_actions", []) or []
 
-    # --- Top Row
     c1, c2, c3 = st.columns(3)
     c1.metric("Doc Type (Nova)", str(doc_type_guess))
     c2.metric("Risk Score", f"{risk_score}/100")
@@ -448,67 +450,54 @@ if mode == "Single Document":
         st.caption("Risk Meter")
         st.progress(min(max(risk_score, 0), 100))
 
-    # --- Summary
     if summary.strip():
         st.markdown("### 🧾 Executive Summary")
         st.markdown(summary)
+    else:
+        st.caption("No summary generated (likely low extracted text).")
 
-    # --- KPIs
     if kpis:
         st.markdown("### 🔑 KPIs")
-        kpi_cols = st.columns(3)
+        cols = st.columns(3)
         for i, kpi in enumerate(kpis[:9]):
-            with kpi_cols[i % 3]:
-                st.metric(
-                    kpi.get("label", "KPI"),
-                    kpi.get("value", "-"),
-                    kpi.get("note", "")[:40] if kpi.get("note") else None
-                )
+            with cols[i % 3]:
+                st.metric(kpi.get("label", "KPI"), kpi.get("value", "-"), kpi.get("note", "")[:40] if kpi.get("note") else None)
 
-    # --- Derived Insights
     if derived:
         st.markdown("### ✨ Derived Insights")
         for d in derived[:10]:
             st.markdown(f"- {d}")
 
-    # --- Charts
     if charts:
         st.markdown("### 📈 Auto Charts")
         for ch in charts[:4]:
             title = ch.get("title", "Chart")
             ctype = ch.get("type", "bar")
             data = ch.get("data", []) or []
-
             st.markdown(f"**{title}**")
             if data:
                 dfc = pd.DataFrame(data)
                 if "x" in dfc.columns and "y" in dfc.columns:
                     dfc["x"] = dfc["x"].astype(str)
                     dfc["y"] = pd.to_numeric(dfc["y"], errors="coerce").fillna(0)
-
                     if ctype == "line":
                         st.line_chart(dfc.set_index("x")[["y"]])
                     else:
                         st.bar_chart(dfc.set_index("x")[["y"]])
                 else:
                     st.dataframe(dfc, use_container_width=True)
-            else:
-                st.caption("No chart data available.")
 
-    # --- Table preview
     if table_preview:
         st.markdown("### 🧩 Table Preview")
         st.dataframe(pd.DataFrame(table_preview), use_container_width=True)
 
-    # --- Key Dates Timeline (deterministic)
     st.markdown("### 🗓️ Key Dates Timeline (AI Structured)")
     if local_dates:
         df_dates = pd.DataFrame(local_dates).rename(columns={"label": "Event", "value": "Date"})
         st.dataframe(df_dates, use_container_width=True)
     else:
-        st.caption("No dates detected in the document.")
+        st.caption("No dates detected in the document. (Usually means OCR/text is empty)")
 
-    # --- Risks + Actions
     if risks:
         st.markdown("### ⚠️ Risks")
         for r in risks[:8]:
@@ -526,7 +515,6 @@ if mode == "Single Document":
         st.session_state["last_doc_fp"] = doc_fp
         with st.spinner("⚙️ Nova is auto-optimizing retrieval settings..."):
             st.session_state["auto_rag_settings"] = recommend_rag_settings(full_text)
-
         st.session_state.pop("suggest_fp", None)
         st.session_state.pop("suggested_questions", None)
         st.session_state.pop("index_fp", None)
@@ -534,7 +522,6 @@ if mode == "Single Document":
     rec = st.session_state.get("auto_rag_settings", {"chunk_size": 1000, "overlap": 150, "top_k": 4})
     auto_chunk_size, auto_overlap, auto_top_k = rec["chunk_size"], rec["overlap"], rec["top_k"]
 
-    # Sidebar retrieval settings (auto + adjustable)
     st.sidebar.subheader("🔎 Retrieval settings")
     use_auto = st.sidebar.toggle("Use Nova auto-optimized settings", value=True)
 
@@ -563,7 +550,7 @@ if mode == "Single Document":
 
     st.divider()
 
-    # Suggested questions (auto)
+    # Suggested questions
     st.markdown("### ✨ Nova-suggested questions (auto from your document)")
     suggest_fp = f"{doc_fp}:{user_interest}"
 
@@ -573,12 +560,10 @@ if mode == "Single Document":
             st.session_state["suggested_questions"] = suggest_questions(full_text, user_interest=user_interest, n=6)
 
     qs = st.session_state.get("suggested_questions", [])
-
     if qs:
         cols = st.columns(3)
         for i, q in enumerate(qs):
             with cols[i % 3]:
-                # ✅ IMPORTANT: rerun so chat section executes immediately
                 if st.button(q, use_container_width=True, key=f"dynq_{doc_fp}_{i}"):
                     st.session_state["pending_question"] = q
                     st.rerun()
@@ -592,16 +577,14 @@ if mode == "Single Document":
 
     st.divider()
 
-    # Chat section (manual + auto-run from suggestions)
+    # Chat
     st.subheader("3) Chat with your document")
     st.markdown("#### 💬 Ask a question")
 
-    # ✅ Auto-run if a suggestion was clicked
     pending = st.session_state.pop("pending_question", "")
     if pending:
         run_single_question(pending, top_k=top_k)
 
-    # Manual input
     with st.form("ask_form", clear_on_submit=True):
         q_text = st.text_input(
             "Type your question",
@@ -613,17 +596,14 @@ if mode == "Single Document":
     if ask_clicked and q_text.strip():
         run_single_question(q_text.strip(), top_k=top_k)
 
-    # Show ONLY latest output
     if st.session_state.get("latest_answer"):
         st.markdown("### ✅ Latest Answer")
         st.markdown(f"**Question:** {st.session_state.get('latest_q','')}")
         st.markdown(st.session_state["latest_answer"] or "I don't know based on the document.")
-
         ev = st.session_state.get("latest_evidence", "")
         if ev:
             with st.expander("📌 Evidence"):
                 st.markdown(ev)
-
         st.caption(f"⏱ Response time: {st.session_state.get('latest_rt', 0)} sec")
 
     st.divider()
@@ -633,7 +613,6 @@ if mode == "Single Document":
     if st.button("📄 Generate PDF report", use_container_width=True):
         with st.spinner("Creating a title with Nova Lite..."):
             report_title = generate_report_title(full_text)
-
         auto_type = detect_doc_type(full_text)
 
         latest_block = ""
@@ -682,8 +661,8 @@ else:
         st.info("Upload both PDFs → Ask a comparison question.")
         st.stop()
 
-    text_a = extract_text_from_pdf(up_a)
-    text_b = extract_text_from_pdf(up_b)
+    text_a = extract_text_from_pdf_with_ocr(up_a, max_ocr_pages=4)
+    text_b = extract_text_from_pdf_with_ocr(up_b, max_ocr_pages=4)
 
     with st.spinner("⚙️ Auto-tuning retrieval settings for comparison..."):
         rec = recommend_rag_settings(text_a + "\n\n" + text_b)
