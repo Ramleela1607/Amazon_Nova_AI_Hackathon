@@ -25,6 +25,7 @@ from bedrock_utils import (
     generate_report_title,
     suggest_questions,
     generate_dashboard_insights,
+    generate_dashboard_insights_dynamic,
 )
 
 # ---------- Page ----------
@@ -734,6 +735,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
