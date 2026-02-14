@@ -624,3 +624,156 @@ Document:
             "risks": [],
             "next_actions": [],
         }
+
+import re
+import json
+from typing import Dict, Any, List
+
+def generate_dashboard_insights_dynamic(doc_text: str, max_metrics: int = 40) -> Dict[str, Any]:
+    """
+    Dynamic dashboard builder:
+    - Works for ANY PDF/image text (numbers, tables, lists)
+    - Returns strict JSON for charts + insights
+    """
+
+    brt = get_bedrock_runtime(GEN_REGION)
+
+    # --- Local mining (deterministic) ---
+    text = (doc_text or "").strip()
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{2,}", "\n", text)
+
+    # Extract "label: value" style metrics (very common in invoices/reports)
+    metric_candidates = []
+    for line in text.splitlines():
+        ln = line.strip()
+        if not ln or len(ln) < 4:
+            continue
+        # pattern: Label ... 1234.56 (or $1,234 / 45% / INR 5000)
+        m = re.search(r"(.{3,60}?)\s*[:\-–—]\s*([^\n]{1,40})$", ln)
+        if m:
+            label = m.group(1).strip()
+            val = m.group(2).strip()
+            metric_candidates.append({"label": label, "value": val})
+
+    # Also grab “numbers with nearby words” (fallback for tables/OCR)
+    # Example: "Total 4950", "Due Date 14/02/2023", etc.
+    loose_candidates = []
+    num_re = re.compile(r"(-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?)")
+    for line in text.splitlines():
+        ln = line.strip()
+        if not ln:
+            continue
+        nums = list(num_re.finditer(ln))
+        if not nums:
+            continue
+        for mm in nums[:3]:
+            num = mm.group(1)
+            left = ln[:mm.start()].strip()
+            left = re.sub(r"\s+", " ", left)
+            # take last few words as label
+            words = left.split()
+            label = " ".join(words[-6:]) if words else "Number"
+            loose_candidates.append({"label": label, "value": num})
+
+    # Compact the input (so Nova gets signals not full doc)
+    metric_candidates = metric_candidates[:max_metrics]
+    loose_candidates = loose_candidates[:max_metrics]
+
+    # Try to pass a small excerpt too (for summary/doc type)
+    excerpt = text[:9000] if len(text) > 9000 else text
+
+    prompt = f"""
+You are an Executive Dashboard generator for ANY document.
+
+You will receive:
+1) Raw excerpt (may contain tables)
+2) Candidate metrics (label/value)
+3) Loose numeric signals (label/value)
+
+Your job:
+- Return ONLY valid JSON (no markdown/backticks)
+- Detect what kind of document this is
+- Produce a dashboard with KPIs, derived calculations, and chart-ready data
+
+Return JSON with EXACT keys:
+{{
+  "doc_type_guess": "generic",
+  "summary": "string",
+  "kpis": [{{"label":"", "value":"", "note":""}}],
+  "derived_insights": ["string"],
+  "charts": [
+    {{
+      "title": "string",
+      "type": "bar|line",
+      "x": "string",
+      "y": "string",
+      "data": [{{"x":"", "y": 0}}]
+    }}
+  ],
+  "table_preview": [{{"col1":"", "col2":"", "col3":""}}], 
+  "risk_score": 0,
+  "risks": ["string"],
+  "next_actions": ["string"]
+}}
+
+Rules:
+- Use ONLY what is supported by text/signals (no invention).
+- If you detect a table-like structure, summarize it and put a small preview in table_preview.
+- KPIs: select the most important 6–10 values.
+- Derived calculations MUST be dynamic:
+  - compute min/max/avg when there are multiple numbers
+  - compute deltas / % change when pairs/series exist
+  - flag anomalies (outliers / sudden jumps) if patterns exist
+- Charts MUST be dynamic:
+  - If many numeric items exist -> bar chart of top values
+  - If series (like stages/months/years) exist -> line chart
+- risk_score 0–100 based on risks detected.
+
+RAW EXCERPT:
+{excerpt}
+
+CANDIDATE METRICS (label/value):
+{json.dumps(metric_candidates, ensure_ascii=False)}
+
+LOOSE NUMERIC SIGNALS (label/value):
+{json.dumps(loose_candidates, ensure_ascii=False)}
+""".strip()
+
+    resp = brt.converse(
+        modelId=NOVA_LITE_MODEL_ID,
+        messages=[{"role": "user", "content": [{"text": prompt}]}],
+        inferenceConfig={"maxTokens": 1000, "temperature": 0.15, "topP": 0.9},
+    )
+
+    txt = (resp["output"]["message"]["content"][0]["text"] or "").strip()
+
+    # Robust JSON parse
+    try:
+        out = json.loads(txt)
+        if isinstance(out, dict):
+            return out
+    except Exception:
+        # Try to salvage if extra text around JSON
+        try:
+            start = txt.find("{")
+            end = txt.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                out = json.loads(txt[start:end+1])
+                if isinstance(out, dict):
+                    return out
+        except Exception:
+            pass
+
+    # fallback
+    return {
+        "doc_type_guess": "generic",
+        "summary": "Dashboard could not be generated for this upload.",
+        "kpis": [],
+        "derived_insights": [],
+        "charts": [],
+        "table_preview": [],
+        "risk_score": 0,
+        "risks": [],
+        "next_actions": [],
+    }
