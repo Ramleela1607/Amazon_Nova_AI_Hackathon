@@ -620,11 +620,12 @@ def reset_session():
     ]:
         st.session_state.pop(k, None)
 
-    # Clear caches
     for kk in list(st.session_state.keys()):
         if str(kk).startswith(("dashboard:", "img_insights:", "dates:", "pdf_text:", "extracted_text:", "tables:")):
             st.session_state.pop(kk, None)
-    st.rerun()
+
+    # ✅ set a flag, do NOT rerun here
+    st.session_state["_do_rerun"] = True
 
 
 def build_index_if_needed(full_text: str, chunk_size: int, overlap: int):
@@ -1206,3 +1207,4 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
