@@ -31,18 +31,8 @@ from bedrock_utils import (
     generate_dashboard_insights_dynamic,  # AI dashboard (may fail JSON -> hybrid fallback)
 )
 
-# ------------------------------------------------------------
-# OPTIONAL: Draggable tiles (UI only)
-# ------------------------------------------------------------
-try:
-    from streamlit_elements import elements, dashboard as el_dashboard, mui
-    ELEMENTS_OK = True
-except Exception:
-    ELEMENTS_OK = False
-
-
 # ============================================================
-# Page + Premium UI  (UPDATED: brighter + readable + no top whitespace)
+# Page + Premium UI (Bright + readable + no top whitespace)
 # ============================================================
 st.set_page_config(page_title="Smart Document Copilot", layout="wide")
 
@@ -194,30 +184,56 @@ div[data-baseweb="input"] input, textarea {
 .pill b{ color:#061022; }
 .small-muted{ color: var(--muted) !important; font-size: 0.92rem; }
 
-/* Tile look (for draggable dashboard) */
-.tile {
+a { color: #1d4ed8 !important; }
+
+/* KPI Card Grid */
+.kpi-grid{
+  display:grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+@media (max-width: 900px){
+  .kpi-grid{ grid-template-columns: repeat(1, minmax(0, 1fr)); }
+}
+.kpi-card{
   border-radius: 18px;
   border: 1px solid rgba(15,23,42,0.12);
   background: rgba(255,255,255,0.86);
-  box-shadow: 0 12px 30px rgba(2,6,23,0.09);
-  padding: 12px 14px;
+  box-shadow: 0 12px 30px rgba(2,6,23,0.08);
+  padding: 14px 14px;
+  position: relative;
+  overflow: hidden;
 }
-.tile .title{
+.kpi-card::before{
+  content:"";
+  position:absolute;
+  inset:-40px;
+  background:
+    radial-gradient(220px circle at 15% 20%, rgba(79,70,229,0.18), transparent 60%),
+    radial-gradient(220px circle at 85% 35%, rgba(6,182,212,0.14), transparent 60%),
+    radial-gradient(240px circle at 30% 90%, rgba(34,197,94,0.10), transparent 60%);
+  filter: blur(16px);
+  opacity: 0.85;
+}
+.kpi-inner{
+  position: relative;
+  z-index: 1;
+}
+.kpi-title{
   font-weight: 900;
   font-size: 0.95rem;
   margin-bottom: 6px;
 }
-.tile .drag{
-  cursor: move;
-  user-select: none;
-  display: inline-block;
-  padding: 3px 8px;
-  border-radius: 999px;
-  border: 1px dashed rgba(79,70,229,0.30);
-  background: rgba(79,70,229,0.06);
-  margin-bottom: 10px;
+.kpi-value{
+  font-weight: 950;
+  font-size: 1.55rem;
+  letter-spacing: -0.02em;
 }
-a { color: #1d4ed8 !important; }
+.kpi-note{
+  margin-top: 6px;
+  color: rgba(7,16,31,0.70) !important;
+  font-size: 0.92rem;
+}
 </style>
 """,
     unsafe_allow_html=True,
@@ -226,13 +242,12 @@ a { color: #1d4ed8 !important; }
 st.title("📄 Smart Document Copilot")
 st.markdown(
     "<div class='pill'><b>Amazon Nova</b> • Bedrock • Multimodal • RAG • Evidence • Dashboard • Compare • Report</div>"
-    "<div class='small-muted'>Bright Neon Glass UI • Text always readable • Optional draggable tiles</div>",
+    "<div class='small-muted'>Bright Neon Glass UI • Clean Stable Dashboard • Excel KPI Fix</div>",
     unsafe_allow_html=True,
 )
 
 # ============================================================
 # Helpers (Chunking, Extraction, OCR, Dates, Dashboard Mining)
-# (LOGIC UNCHANGED below)
 # ============================================================
 
 def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150) -> List[str]:
@@ -384,7 +399,7 @@ def read_excel_or_csv(uploaded_file) -> Tuple[str, List[Tuple[str, pd.DataFrame]
         try:
             df = pd.read_csv(io.BytesIO(raw))
             previews.append(("CSV", df))
-            text = df.to_csv(index=False)
+            text = df.head(200).to_csv(index=False)
             return text, previews
         except Exception:
             return "", []
@@ -396,10 +411,12 @@ def read_excel_or_csv(uploaded_file) -> Tuple[str, List[Tuple[str, pd.DataFrame]
             for sheet in xls.sheet_names[:6]:
                 df = xls.parse(sheet)
                 previews.append((sheet, df))
-            # convert to compact text
+
+            # Text for RAG: keep compact but include headers + sample rows
             text_parts = []
             for sheet, df in previews[:4]:
-                text_parts.append(f"--- SHEET: {sheet} ---\n{df.head(80).to_csv(index=False)}")
+                dfx = df.head(120).copy()
+                text_parts.append(f"--- SHEET: {sheet} ---\n{dfx.to_csv(index=False)}")
             return "\n\n".join(text_parts).strip(), previews
         except Exception:
             return "", []
@@ -490,9 +507,157 @@ def extract_dates_with_events(text: str, max_items: int = 140) -> List[Dict[str,
 
     return results
 
+
+# ============================
+# Excel KPI Fix (Meaningful KPIs)
+# ============================
+
+_EXCEL_KPI_KEYWORDS = [
+    "revenue", "sales", "profit", "margin", "ebit", "ebitda", "cost", "expense",
+    "users", "customer", "conversion", "growth", "gmv", "orders", "volume", "qty",
+    "amount", "total", "balance", "cash", "debt", "roi", "rate", "kpi", "score"
+]
+
+def _score_colname(name: str) -> int:
+    s = (name or "").strip().lower()
+    if not s:
+        return 0
+    score = 0
+    for kw in _EXCEL_KPI_KEYWORDS:
+        if kw in s:
+            score += 3
+    if any(x in s for x in ["%", "pct", "percent", "rate", "ratio"]):
+        score += 2
+    if any(x in s for x in ["date", "time", "id", "code", "zip", "pincode"]):
+        score -= 4
+    return score
+
+def excel_dashboard_from_tables(previews: List[Tuple[str, pd.DataFrame]], max_kpis: int = 9) -> Dict[str, Any]:
+    """
+    Build *meaningful* KPIs/charts from Excel tables:
+    - Prefer numeric columns with business-ish names
+    - Use SUM / MEAN / MAX depending on column type
+    - Avoid showing random scattered numbers
+    """
+    out = {"kpis": [], "charts": [], "table_preview": [], "derived_insights": []}
+    if not previews:
+        return out
+
+    candidates = []  # (priority, label, value_str, numeric_value)
+
+    for sheet, df in previews[:6]:
+        if df is None or df.empty:
+            continue
+
+        dfx = df.copy()
+
+        # Try to coerce numeric columns even if strings have commas/currency
+        numeric_cols = []
+        for col in dfx.columns:
+            ser = dfx[col]
+            # quick attempt: strip commas and currency symbols
+            if ser.dtype == object:
+                cleaned = ser.astype(str).str.replace(",", "", regex=False)
+                cleaned = cleaned.str.replace(r"[₹$€]", "", regex=True).str.replace("%", "", regex=False)
+                num = pd.to_numeric(cleaned, errors="coerce")
+            else:
+                num = pd.to_numeric(ser, errors="coerce")
+
+            nn = int(num.notna().sum())
+            if nn >= max(3, int(0.25 * len(dfx))):
+                numeric_cols.append((col, num))
+
+        if not numeric_cols:
+            continue
+
+        out["table_preview"].append({"sheet": sheet, "rows": int(len(df)), "cols": int(df.shape[1])})
+
+        for col, num in numeric_cols[:30]:
+            col_score = _score_colname(str(col))
+            nn = int(num.notna().sum())
+            if nn == 0:
+                continue
+
+            # Stats
+            ssum = float(num.sum(skipna=True))
+            smean = float(num.mean(skipna=True))
+            smax = float(num.max(skipna=True))
+            smin = float(num.min(skipna=True))
+
+            # Choose a representative metric:
+            # - if looks like a rate/percent -> mean
+            # - if looks like totals -> sum
+            # - otherwise -> max (often KPI peaks)
+            col_l = str(col).lower()
+            if any(x in col_l for x in ["%", "pct", "percent", "rate", "ratio"]):
+                pick_val = smean
+                pick_label = f"{sheet} • {col} (avg)"
+            elif any(x in col_l for x in ["total", "revenue", "sales", "profit", "amount", "cost", "expense", "gmv"]):
+                pick_val = ssum
+                pick_label = f"{sheet} • {col} (sum)"
+            else:
+                pick_val = smax
+                pick_label = f"{sheet} • {col} (max)"
+
+            # Filter useless tiny integers
+            if abs(pick_val) < 10:
+                continue
+
+            # priority: colname score + magnitude bucket
+            mag = abs(pick_val)
+            mag_score = 0
+            if mag >= 1_000_000:
+                mag_score = 5
+            elif mag >= 100_000:
+                mag_score = 4
+            elif mag >= 10_000:
+                mag_score = 3
+            elif mag >= 1_000:
+                mag_score = 2
+            else:
+                mag_score = 1
+
+            priority = col_score + mag_score
+            value_str = f"{pick_val:,.2f}" if abs(pick_val) < 1000 else f"{pick_val:,.0f}"
+            candidates.append((priority, pick_label, value_str, float(pick_val)))
+
+    if not candidates:
+        out["derived_insights"].append("Excel detected, but no strong numeric columns found for KPIs.")
+        return out
+
+    # Sort & pick top KPIs
+    candidates.sort(key=lambda x: (x[0], abs(x[3])), reverse=True)
+
+    chosen = []
+    seen = set()
+    for pr, lbl, vstr, vnum in candidates:
+        key = lbl.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        chosen.append((pr, lbl, vstr, vnum))
+        if len(chosen) >= max_kpis:
+            break
+
+    out["kpis"] = [{"label": lbl[:52], "value": vstr, "note": ""} for _pr, lbl, vstr, _vnum in chosen]
+
+    # Chart from chosen or top 12
+    top_for_chart = candidates[:12]
+    out["charts"].append(
+        {
+            "title": "Top Excel Metrics",
+            "type": "bar",
+            "data": [{"x": lbl[:28], "y": float(vnum)} for _pr, lbl, _vstr, vnum in top_for_chart],
+        }
+    )
+
+    out["derived_insights"].append(f"Excel KPIs built from {len(candidates)} numeric column signals across sheets.")
+    return out
+
+
 def local_dashboard_from_text(text: str, max_items: int = 140) -> Dict[str, Any]:
     """
-    Strong deterministic miner for OCR/PDF/Excel text:
+    Deterministic miner for OCR/PDF/text:
     - Prefers Label: Value and Label 4,250 patterns
     - Filters years/dates and tiny junk ints
     - Dedupes
@@ -554,7 +719,7 @@ def local_dashboard_from_text(text: str, max_items: int = 140) -> Dict[str, Any]
                 continue
             candidates.append((m.group(1).strip(), m.group(2).strip(), 2))
 
-    # 3) Weak: numbers anywhere
+    # 3) Weak: numbers anywhere (reduced noise: only if label has words)
     num_re = re.compile(r"(-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?)")
     for ln in joined:
         nums = list(num_re.finditer(ln))
@@ -566,7 +731,9 @@ def local_dashboard_from_text(text: str, max_items: int = 140) -> Dict[str, Any]
         for mm in nums[:2]:
             raw = mm.group(1)
             left = re.sub(r"\s+", " ", ln[:mm.start()].strip())
-            label = " ".join(left.split()[-6:]) if left else "Number"
+            if not left or len(left.split()) < 2:
+                continue
+            label = " ".join(left.split()[-6:])
             candidates.append((label, raw, 1))
 
     numeric = []
@@ -642,7 +809,12 @@ def merge_ai_and_local(ai: Dict[str, Any], local: Dict[str, Any]) -> Dict[str, A
     return merged
 
 
-def make_pdf_report(filename: str, title: str, sections: List[Tuple[str, str]], table_blocks: List[Tuple[str, pd.DataFrame]] = None) -> bytes:
+def make_pdf_report(
+    filename: str,
+    title: str,
+    sections: List[Tuple[str, str]],
+    table_blocks: List[Tuple[str, pd.DataFrame]] = None,
+) -> bytes:
     styles = getSampleStyleSheet()
     story = [Paragraph(title, styles["Heading1"]), Spacer(1, 0.2 * inch)]
 
@@ -702,7 +874,6 @@ def reset_session():
         if str(kk).startswith(("dashboard:", "img_insights:", "dates:", "pdf_text:", "extracted_text:", "tables:")):
             st.session_state.pop(kk, None)
 
-    # ✅ set a flag, do NOT rerun here
     st.session_state["_do_rerun"] = True
 
 
@@ -745,6 +916,25 @@ def run_single_question(user_q: str, top_k: int):
     st.session_state["latest_evidence"] = (ans.get("evidence") or "").strip()
     st.session_state["latest_sources"] = list(zip(hits, scores))
     st.session_state["latest_rt"] = rt
+
+
+def render_kpi_cards(kpis: List[Dict[str, Any]]):
+    if not kpis:
+        return
+    cards_html = ["<div class='kpi-grid'>"]
+    for kpi in kpis[:9]:
+        label = str(kpi.get("label", "KPI"))
+        value = str(kpi.get("value", "-"))
+        note = str(kpi.get("note", "") or "")
+        cards_html.append(
+            "<div class='kpi-card'><div class='kpi-inner'>"
+            f"<div class='kpi-title'>{label}</div>"
+            f"<div class='kpi-value'>{value}</div>"
+            + (f"<div class='kpi-note'>{note}</div>" if note.strip() else "")
+            + "</div></div>"
+        )
+    cards_html.append("</div>")
+    st.markdown("".join(cards_html), unsafe_allow_html=True)
 
 
 # ============================================================
@@ -818,12 +1008,8 @@ if mode == "Single Document":
         st.info(
             "• Upload **one** file at a time (others auto-disable)\n"
             "• Scanned PDFs: OCR runs automatically\n"
-            "• Excel: shows table previews + dashboard"
+            "• Excel: KPI cards now come from numeric columns"
         )
-        if ELEMENTS_OK:
-            st.success("✅ Draggable tiles: Enabled")
-        else:
-            st.warning("ℹ️ Draggable tiles: install `streamlit-elements` to enable")
 
     clear_active_if_none(uploaded_pdf, uploaded_img, uploaded_xl, uploaded_doc, uploaded_ppt)
 
@@ -840,6 +1026,7 @@ if mode == "Single Document":
 
     # Use bytes-hash fingerprint per upload for stable caching
     upload_fp = ""
+
     if uploaded_pdf is not None:
         b = uploaded_pdf.getvalue()
         upload_fp = "pdf:" + hashlib.md5(b[:250000]).hexdigest()
@@ -968,8 +1155,16 @@ if mode == "Single Document":
         if st.button("📄 Download Dashboard Report (PDF)", use_container_width=True):
             st.session_state["download_report_now"] = True
 
-    # Local deterministic mining (fast + stable)
-    local_dash = local_dashboard_from_text(full_text)
+    # Local deterministic mining:
+    # - If Excel exists: use Excel KPI extractor (meaningful)
+    # - Else: use text miner
+    if table_previews:
+        local_dash = excel_dashboard_from_tables(table_previews, max_kpis=9)
+        # If excel extractor somehow yields nothing, fallback to text miner
+        if not local_dash.get("kpis"):
+            local_dash = local_dashboard_from_text(full_text)
+    else:
+        local_dash = local_dashboard_from_text(full_text)
 
     if dash_key not in st.session_state:
         with st.spinner("Analyzing with Nova + Hybrid signals..."):
@@ -1015,120 +1210,30 @@ if mode == "Single Document":
     risks = dashboard.get("risks", []) or []
     next_actions = dashboard.get("next_actions", []) or []
 
-    # ------------------------------------------------------------
-    # UI: Draggable tiles (ONLY UI)
-    # ------------------------------------------------------------
-    if ELEMENTS_OK:
-        st.markdown("<div class='small-muted'>Drag tiles by the <b>drag handle</b> to rearrange your dashboard.</div>", unsafe_allow_html=True)
+    # -----------------------------
+    # CLEAN EXECUTIVE DASHBOARD UI
+    # -----------------------------
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Doc Type (Nova)", str(doc_type_guess))
+    c2.metric("Risk Score", f"{risk_score}/100")
+    with c3:
+        st.caption("Risk Meter")
+        st.progress(min(max(risk_score, 0), 100))
 
-        st.session_state.setdefault(
-            "dash_layout",
-            [
-                el_dashboard.Item("tile_doc", 0, 0, 4, 2),
-                el_dashboard.Item("tile_risk", 4, 0, 4, 2),
-                el_dashboard.Item("tile_sum", 8, 0, 4, 2),
-                el_dashboard.Item("tile_kpi", 0, 2, 6, 5),
-                el_dashboard.Item("tile_chart", 6, 2, 6, 5),
-                el_dashboard.Item("tile_dates", 0, 7, 7, 5),
-                el_dashboard.Item("tile_table", 7, 7, 5, 5),
-            ],
-        )
+    if summary.strip():
+        st.markdown("### 🧾 Executive Summary")
+        st.markdown(summary)
 
-        with elements("dash"):
-            with el_dashboard.Grid(st.session_state["dash_layout"], draggableHandle=".drag"):
-                # Doc type tile
-                with mui.Paper(key="tile_doc", className="tile", elevation=0):
-                    mui.Typography("Document Type", className="title")
-                    mui.Typography("Drag", className="drag")
-                    mui.Typography(str(doc_type_guess), variant="h5")
+    if kpis:
+        st.markdown("### 🔑 KPIs")
+        render_kpi_cards(kpis)
 
-                # Risk tile
-                with mui.Paper(key="tile_risk", className="tile", elevation=0):
-                    mui.Typography("Risk Score", className="title")
-                    mui.Typography("Drag", className="drag")
-                    mui.Typography(f"{risk_score}/100", variant="h5")
+    if derived:
+        st.markdown("### ✨ Derived Insights")
+        for d in derived[:10]:
+            st.markdown(f"- {d}")
 
-                # Summary tile
-                with mui.Paper(key="tile_sum", className="tile", elevation=0):
-                    mui.Typography("Executive Summary", className="title")
-                    mui.Typography("Drag", className="drag")
-                    mui.Typography(summary or "—", variant="body2")
-
-                # KPI tile
-                with mui.Paper(key="tile_kpi", className="tile", elevation=0):
-                    mui.Typography("KPIs", className="title")
-                    mui.Typography("Drag", className="drag")
-                    if kpis:
-                        for x in kpis[:9]:
-                            mui.Typography(f"• {x.get('label','KPI')}: {x.get('value','-')}", variant="body2")
-                    else:
-                        mui.Typography("No KPIs detected.", variant="body2")
-
-                    if derived:
-                        mui.Divider(sx={"my": 1})
-                        mui.Typography("Derived Insights", fontWeight=900, variant="body2")
-                        for d in derived[:6]:
-                            mui.Typography(f"• {d}", variant="body2")
-
-                # Chart tile (kept as normal Streamlit charts below to avoid breaking logic)
-                with mui.Paper(key="tile_chart", className="tile", elevation=0):
-                    mui.Typography("Charts", className="title")
-                    mui.Typography("Drag", className="drag")
-                    mui.Typography("Charts render below (Streamlit) for stability.", variant="body2")
-
-                # Dates tile
-                with mui.Paper(key="tile_dates", className="tile", elevation=0):
-                    mui.Typography("Key Dates", className="title")
-                    mui.Typography("Drag", className="drag")
-                    if local_dates:
-                        for d in local_dates[:10]:
-                            mui.Typography(f"• {d.get('value','')} — {d.get('label','')}", variant="body2")
-                    else:
-                        mui.Typography("No dates detected.", variant="body2")
-
-                # Table tile
-                with mui.Paper(key="tile_table", className="tile", elevation=0):
-                    mui.Typography("Table Preview", className="title")
-                    mui.Typography("Drag", className="drag")
-                    if table_previews:
-                        mui.Typography("Excel previews shown below.", variant="body2")
-                    elif dash_table_preview:
-                        mui.Typography("Dashboard preview shown below.", variant="body2")
-                    elif local_dash.get("table_preview"):
-                        mui.Typography("Local preview shown below.", variant="body2")
-                    else:
-                        mui.Typography("No table-like rows detected.", variant="body2")
-
-    else:
-        # Fallback (your existing layout, unchanged)
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Doc Type (Nova)", str(doc_type_guess))
-        c2.metric("Risk Score", f"{risk_score}/100")
-        with c3:
-            st.caption("Risk Meter")
-            st.progress(min(max(risk_score, 0), 100))
-
-        if summary.strip():
-            st.markdown("### 🧾 Executive Summary")
-            st.markdown(summary)
-
-        if kpis:
-            st.markdown("### 🔑 KPIs")
-            cols = st.columns(3)
-            for i, kpi in enumerate(kpis[:9]):
-                with cols[i % 3]:
-                    st.metric(
-                        str(kpi.get("label", "KPI"))[:40],
-                        str(kpi.get("value", "-"))[:28],
-                        (str(kpi.get("note", ""))[:38] if kpi.get("note") else None),
-                    )
-
-        if derived:
-            st.markdown("### ✨ Derived Insights")
-            for d in derived[:10]:
-                st.markdown(f"- {d}")
-
-    # Keep charts exactly as your logic (Streamlit rendering)
+    # Keep charts as normal Streamlit charts
     if charts:
         st.markdown("### 📈 Auto Charts")
         for ch in charts[:4]:
@@ -1258,7 +1363,7 @@ if mode == "Single Document":
     st.divider()
 
     # ============================================================
-    # Nova Suggested Questions (ALWAYS AUTO-POPULATE)
+    # Nova Suggested Questions (AUTO)
     # ============================================================
     st.markdown("### ✨ Nova-suggested questions (auto from your document)")
 
