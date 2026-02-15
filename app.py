@@ -3,7 +3,7 @@ import time
 import json
 import hashlib
 import re
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple
 
 import streamlit as st
 import pandas as pd
@@ -27,7 +27,7 @@ from bedrock_utils import (
     nova_image_insights_brief,
     generate_report_title,
     suggest_questions,
-    generate_dashboard_insights_dynamic,  # AI dashboard (may return invalid JSON -> we handle hybrid)
+    generate_dashboard_insights_dynamic,  # AI dashboard (may fail JSON -> hybrid fallback)
 )
 
 # ============================================================
@@ -129,11 +129,12 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ============================================================
-# Helpers (Chunking, OCR, File Extraction, Dates, Dashboard Hybrid)
-# ============================================================
+# Fixed interest (removed from sidebar UI)
+USER_INTEREST_DEFAULT = "General"
 
-MIN_TEXT_FOR_DASH = 300  # gate so dashboard doesn't run on partial OCR
+# ============================================================
+# Helpers (Text, OCR, Dates, Dashboard Hybrid Mining)
+# ============================================================
 
 def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150) -> List[str]:
     chunks = []
@@ -146,22 +147,29 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150) -> List[st
         start += max(1, chunk_size - overlap)
     return chunks
 
+
 def extract_text_from_pdf_basic(file_like) -> str:
-    """Digital PDFs: best-effort extraction using pypdf."""
+    """Digital PDFs: try pypdf extraction."""
     reader = PdfReader(file_like)
     texts = []
     for i, page in enumerate(reader.pages):
-        t = (page.extract_text() or "").strip()
+        t = page.extract_text() or ""
+        t = t.strip()
         if t:
             texts.append(f"\n\n--- Page {i+1} ---\n{t}")
     return "".join(texts)
 
+
 def pdf_pages_to_png_bytes(pdf_bytes: bytes, max_pages: int = 6) -> List[bytes]:
-    """Render PDF pages to PNG bytes using PyMuPDF if available."""
+    """
+    Render PDF pages to PNG bytes using PyMuPDF if available.
+    If PyMuPDF isn't installed, returns [].
+    """
     try:
         import fitz  # PyMuPDF
     except Exception:
         return []
+
     pages = []
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     for i in range(min(max_pages, doc.page_count)):
@@ -170,22 +178,26 @@ def pdf_pages_to_png_bytes(pdf_bytes: bytes, max_pages: int = 6) -> List[bytes]:
         pages.append(pix.tobytes("png"))
     return pages
 
+
 def extract_text_from_pdf_with_ocr(uploaded_pdf, max_ocr_pages: int = 6) -> str:
     """
     Hybrid PDF text:
     1) pypdf (digital text)
     2) if too short -> OCR first pages (render->image->nova_image_to_text)
-    Cached by pdf hash so first upload becomes stable on reruns.
+    Cached by pdf hash.
     """
     pdf_bytes = uploaded_pdf.getvalue()
-    cache_key = "pdf_text:" + hashlib.md5(pdf_bytes[:250000]).hexdigest()
+    cache_key = "pdf_text:" + hashlib.md5(pdf_bytes[:200000]).hexdigest()
+
     if cache_key in st.session_state:
         return st.session_state[cache_key]
 
     basic_text = extract_text_from_pdf_basic(io.BytesIO(pdf_bytes))
+    basic_len = len((basic_text or "").strip())
+
     combined = basic_text or ""
 
-    if len(combined.strip()) < 250:
+    if basic_len < 250:
         ocr_parts = []
         page_pngs = pdf_pages_to_png_bytes(pdf_bytes, max_pages=max_ocr_pages)
         if page_pngs:
@@ -203,67 +215,25 @@ def extract_text_from_pdf_with_ocr(uploaded_pdf, max_ocr_pages: int = 6) -> str:
     st.session_state[cache_key] = combined
     return combined
 
+
 def normalize_image_to_png_bytes(uploaded_img) -> bytes:
     img = Image.open(uploaded_img).convert("RGB")
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
 
-def extract_text_from_docx_bytes(doc_bytes: bytes) -> str:
-    try:
-        import docx  # python-docx
-    except Exception:
-        return ""
-    try:
-        d = docx.Document(io.BytesIO(doc_bytes))
-        parts = []
-        for p in d.paragraphs:
-            t = (p.text or "").strip()
-            if t:
-                parts.append(t)
-        # tables
-        for table in d.tables:
-            for row in table.rows:
-                row_text = " | ".join((cell.text or "").strip() for cell in row.cells).strip()
-                if row_text:
-                    parts.append(row_text)
-        return "\n".join(parts).strip()
-    except Exception:
-        return ""
-
-def extract_text_from_pptx_bytes(ppt_bytes: bytes) -> str:
-    try:
-        from pptx import Presentation  # python-pptx
-    except Exception:
-        return ""
-    try:
-        prs = Presentation(io.BytesIO(ppt_bytes))
-        parts = []
-        for si, slide in enumerate(prs.slides, start=1):
-            slide_text = []
-            for shape in slide.shapes:
-                if hasattr(shape, "text"):
-                    t = (shape.text or "").strip()
-                    if t:
-                        slide_text.append(t)
-            if slide_text:
-                parts.append(f"--- Slide {si} ---\n" + "\n".join(slide_text))
-        return "\n\n".join(parts).strip()
-    except Exception:
-        return ""
 
 def extract_text_from_excel(uploaded_file) -> str:
     """
-    Reads all sheets from an Excel and returns:
-    - A compact preview text (good for Nova + local mining)
-    - Includes headers + first rows of each sheet
+    Reads all sheets from an Excel and returns compact preview text.
+    Good for Nova + local mining. No OCR involved.
     """
     try:
         xls = pd.ExcelFile(uploaded_file)
     except Exception:
         return ""
 
-    parts = []
+    parts: List[str] = []
     for sheet in xls.sheet_names:
         try:
             df = pd.read_excel(xls, sheet_name=sheet)
@@ -275,7 +245,6 @@ def extract_text_from_excel(uploaded_file) -> str:
 
         df = df.copy()
         df.columns = [str(c) for c in df.columns]
-        # limit size to avoid massive prompt
         preview = df.head(25)
 
         parts.append(f"\n\n=== EXCEL SHEET: {sheet} ===\n")
@@ -285,40 +254,54 @@ def extract_text_from_excel(uploaded_file) -> str:
     return "".join(parts).strip()
 
 
-def extract_text_from_csv_bytes(csv_bytes: bytes, max_rows: int = 80, max_cols: int = 12) -> str:
+def extract_text_from_docx(uploaded_file) -> str:
+    """Best-effort DOCX text extraction."""
     try:
-        df = pd.read_csv(io.BytesIO(csv_bytes), header=None)
-        df = df.iloc[:max_rows, :max_cols].fillna("")
-        lines = []
-        for r in range(df.shape[0]):
-            row = [str(df.iat[r, c]).strip() for c in range(df.shape[1])]
-            row = [x for x in row if x and x.lower() != "nan"]
-            if row:
-                lines.append(" | ".join(row))
-        return "\n".join(lines).strip()
+        import docx
+        doc = docx.Document(uploaded_file)
+        txt = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+        return txt.strip()
     except Exception:
         return ""
 
-def make_doc_fingerprint(full_text: str, file_bytes: Optional[bytes]) -> str:
-    t = full_text or ""
-    mid = t[len(t)//2:len(t)//2 + 6000] if len(t) > 12000 else ""
-    tail = t[-6000:] if len(t) > 6000 else ""
-    fb = hashlib.md5(file_bytes[:250000]).hexdigest() if file_bytes else ""
-    src = f"len={len(t)}||head={t[:8000]}||mid={mid}||tail={tail}||file={fb}"
-    return hashlib.md5(src.encode("utf-8", errors="ignore")).hexdigest()
+
+def extract_text_from_pptx(uploaded_file) -> str:
+    """Best-effort PPTX text extraction."""
+    try:
+        from pptx import Presentation
+        prs = Presentation(uploaded_file)
+        slides_txt = []
+        for i, slide in enumerate(prs.slides, start=1):
+            for shape in slide.shapes:
+                if hasattr(shape, "text") and shape.text and shape.text.strip():
+                    slides_txt.append(f"[Slide {i}] {shape.text.strip()}")
+        return "\n".join(slides_txt).strip()
+    except Exception:
+        return ""
+
 
 def extract_dates_with_events(text: str, max_items: int = 120) -> List[Dict[str, str]]:
+    """
+    Robust date extraction for PDF/OCR text including ranges and month-year.
+    Returns: [{"label": event, "value": date_or_range}, ...]
+    """
     if not text or not str(text).strip():
         return []
+
     t = str(text)
     t = t.replace("\r", "\n")
     t = t.replace("\u2013", "-").replace("\u2014", "-")
     t = re.sub(r"[ \t]+", " ", t)
     t = re.sub(r"\n{2,}", "\n", t)
+
+    # Fix OCR split: "12\nMay\n2024"
     t = re.sub(r"(\d{1,2})\s*\n\s*([A-Za-z]{3,9})\s*\n\s*(\d{2,4})", r"\1 \2 \3", t)
+
+    # Remove ordinals: 12th -> 12
     t = re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", t, flags=re.IGNORECASE)
 
     months = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*"
+
     p_range = rf"\b({months}\s+\d{{4}})\s*-\s*(Present|{months}\s+\d{{4}})\b"
     p_iso = r"\b\d{4}[/-]\d{1,2}[/-]\d{1,2}\b"
     p_slash = r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b"
@@ -335,27 +318,39 @@ def extract_dates_with_events(text: str, max_items: int = 120) -> List[Dict[str,
         ln = line.strip()
         if not ln:
             continue
+
         for m in date_re.finditer(ln):
             date_str = m.group(0).strip()
-            event = ln[:m.start()].strip() or ln[m.end():].strip()
+
+            event = ln[:m.start()].strip()
+            if not event:
+                event = ln[m.end():].strip()
+
             event = re.sub(r"\s+", " ", event).strip(" -:•;|")
             if not event:
                 event = "Date mentioned"
+
             words = event.split()
             if len(words) > 16:
                 event = " ".join(words[-16:])
+
             key = (event.lower(), date_str.lower())
             if key in seen:
                 continue
             seen.add(key)
+
             results.append({"label": event, "value": date_str})
             if len(results) >= max_items:
                 break
+
         if len(results) >= max_items:
             break
+
     return results
 
+
 def try_parse_number(value: str):
+    """Extract float from noisy currency/percent strings."""
     if value is None:
         return None
     s = str(value).strip().replace(",", "")
@@ -367,13 +362,27 @@ def try_parse_number(value: str):
     except Exception:
         return None
 
+
 def local_mine_metrics(text: str, max_items: int = 80) -> Dict[str, Any]:
-    out = {"kpis": [], "charts": [], "table_preview": [], "derived_insights": []}
+    """
+    Deterministic mining:
+    - Finds label:value metrics
+    - Finds table-ish lines with numbers
+    - Produces fallback KPIs + chart candidates
+    """
+    out = {
+        "kpis": [],
+        "charts": [],
+        "table_preview": [],
+        "derived_insights": [],
+    }
+
     if not text or not str(text).strip():
         return out
 
     t = str(text)
-    t = t.replace("\r", "\n").replace("\u2013", "-").replace("\u2014", "-")
+    t = t.replace("\r", "\n")
+    t = t.replace("\u2013", "-").replace("\u2014", "-")
     t = re.sub(r"[ \t]+", " ", t)
     t = re.sub(r"\n{3,}", "\n\n", t)
 
@@ -384,7 +393,9 @@ def local_mine_metrics(text: str, max_items: int = 80) -> Dict[str, Any]:
             continue
         m = re.search(r"^(.{2,60}?)\s*[:\-]\s*([^\n]{1,50})$", ln)
         if m:
-            metric_candidates.append((m.group(1).strip(), m.group(2).strip()))
+            label = m.group(1).strip()
+            val = m.group(2).strip()
+            metric_candidates.append((label, val))
 
     num_re = re.compile(r"(-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?)")
     loose = []
@@ -395,11 +406,14 @@ def local_mine_metrics(text: str, max_items: int = 80) -> Dict[str, Any]:
         nums = list(num_re.finditer(ln))
         if not nums:
             continue
+
         if len(nums) >= 2 and len(ln) <= 180:
             out["table_preview"].append({"row": ln})
+
         for mm in nums[:3]:
             val = mm.group(1)
-            left = re.sub(r"\s+", " ", ln[:mm.start()].strip())
+            left = ln[:mm.start()].strip()
+            left = re.sub(r"\s+", " ", left)
             words = left.split()
             label = " ".join(words[-6:]) if words else "Number"
             loose.append((label, val))
@@ -414,17 +428,20 @@ def local_mine_metrics(text: str, max_items: int = 80) -> Dict[str, Any]:
         numeric_items.append((label, num, val))
 
     numeric_items_sorted = sorted(numeric_items, key=lambda x: abs(x[1]), reverse=True)
-
-    for label, _num, raw in numeric_items_sorted[:9]:
+    for label, num, raw in numeric_items_sorted[:9]:
         out["kpis"].append({"label": label[:35], "value": raw, "note": ""})
 
     nums_only = [x[1] for x in numeric_items]
     if len(nums_only) >= 3:
         mn, mx = min(nums_only), max(nums_only)
         avg = sum(nums_only) / len(nums_only)
-        out["derived_insights"].append(f"Detected {len(nums_only)} numeric values. Min={mn:g}, Max={mx:g}, Avg={avg:g}.")
+        out["derived_insights"].append(
+            f"Detected {len(nums_only)} numeric values. Min={mn:g}, Max={mx:g}, Avg={avg:g}."
+        )
         if mx != 0 and abs(mx) > 10 * max(1e-9, abs(avg)):
-            out["derived_insights"].append("Some values are much larger than average (possible totals/outliers).")
+            out["derived_insights"].append(
+                "Some values are much larger than average (possible totals/outliers)."
+            )
 
     if numeric_items_sorted:
         data = [{"x": label[:28], "y": float(num)} for label, num, _raw in numeric_items_sorted[:12]]
@@ -433,7 +450,9 @@ def local_mine_metrics(text: str, max_items: int = 80) -> Dict[str, Any]:
     out["table_preview"] = out["table_preview"][:8]
     return out
 
+
 def merge_ai_and_local(ai: Dict[str, Any], local: Dict[str, Any]) -> Dict[str, Any]:
+    """Hybrid merge: AI if available, else deterministic local fallback."""
     merged = dict(ai or {})
     if not isinstance(merged.get("kpis"), list) or not merged.get("kpis"):
         merged["kpis"] = local.get("kpis", [])
@@ -443,28 +462,11 @@ def merge_ai_and_local(ai: Dict[str, Any], local: Dict[str, Any]) -> Dict[str, A
         merged["table_preview"] = local.get("table_preview", [])
     if not isinstance(merged.get("derived_insights"), list) or not merged.get("derived_insights"):
         merged["derived_insights"] = local.get("derived_insights", [])
-
-    summ = str(merged.get("summary", "") or "")
-    if (not summ.strip()) or ("could not be generated" in summ.lower()) or ("invalid json" in summ.lower()):
+    if not merged.get("summary") or "could not be generated" in str(merged.get("summary", "")).lower():
         if local.get("kpis") or local.get("charts"):
             merged["summary"] = "Auto dashboard generated from detected numbers/tables in the document."
     return merged
 
-def safe_ai_dashboard(full_text: str, retries: int = 2) -> Dict[str, Any]:
-    last: Dict[str, Any] = {}
-    for _ in range(retries):
-        try:
-            out = generate_dashboard_insights_dynamic(full_text)
-            if isinstance(out, dict):
-                ok = bool(out.get("kpis")) or bool(out.get("charts")) or (
-                    out.get("summary") and "could not" not in str(out["summary"]).lower()
-                )
-                if ok:
-                    return out
-                last = out
-        except Exception:
-            last = {}
-    return last if isinstance(last, dict) else {}
 
 def make_pdf_report(filename: str, title: str, sections: List[Tuple[str, str]]) -> bytes:
     styles = getSampleStyleSheet()
@@ -480,6 +482,7 @@ def make_pdf_report(filename: str, title: str, sections: List[Tuple[str, str]]) 
     with open(path, "rb") as f:
         return f.read()
 
+
 def reset_session():
     st.session_state["uploader_key"] = st.session_state.get("uploader_key", 0) + 1
     for k in [
@@ -493,9 +496,10 @@ def reset_session():
         st.session_state.pop(k, None)
 
     for kk in list(st.session_state.keys()):
-        if str(kk).startswith(("dashboard:", "img_insights:", "dates:", "pdf_text:")):
+        if str(kk).startswith(("dashboard:", "img_insights:", "dates:", "pdf_text:", "doc_text:")):
             st.session_state.pop(kk, None)
     st.rerun()
+
 
 def build_index_if_needed(full_text: str, chunk_size: int, overlap: int):
     if not full_text or len(full_text.strip()) < 10:
@@ -514,6 +518,7 @@ def build_index_if_needed(full_text: str, chunk_size: int, overlap: int):
 
     st.session_state["single_rag"] = rag
     st.session_state["index_fp"] = new_fp
+
 
 def run_single_question(user_q: str, top_k: int):
     rag = st.session_state.get("single_rag", None)
@@ -536,6 +541,7 @@ def run_single_question(user_q: str, top_k: int):
     st.session_state["latest_sources"] = list(zip(hits, scores))
     st.session_state["latest_rt"] = rt
 
+
 # Session init
 st.session_state.setdefault("uploader_key", 0)
 
@@ -550,266 +556,152 @@ st.sidebar.markdown("---")
 if mode == "Single Document":
     k = st.session_state.get("uploader_key", 0)
 
-    # Read last selections from session_state (so disabling works on reruns)
-    pdf_key = f"pdf_uploader_{k}"
-    img_key = f"img_uploader_{k}"
-    other_key = f"other_uploader_{k}"
-
-    existing_pdf = st.session_state.get(pdf_key)
-    existing_img = st.session_state.get(img_key)
-    existing_other = st.session_state.get(other_key)
-
-    has_pdf = existing_pdf is not None
-    has_img = existing_img is not None
-    has_other = existing_other is not None
-    
     uploaded_file = st.file_uploader(
-    "📤 Upload a document (PDF/Image/Excel/Word/PPT)",
-    type=["pdf", "png", "jpg", "jpeg", "webp", "xlsx", "xls", "docx", "pptx"],
-    key=f"any_uploader_{k}"
-    )
-
-
-    uploaded_pdf = st.file_uploader(
-        "📤 Upload a PDF",
-        type=["pdf"],
-        key=pdf_key,
-        disabled=(has_img or has_other),
-    )
-
-    uploaded_img = st.file_uploader(
-        "🖼️ Upload an Image",
-        type=["png", "jpg", "jpeg", "webp"],
-        key=img_key,
-        disabled=(has_pdf or has_other),
-    )
-
-    uploaded_other = st.file_uploader(
-        "📎 Upload Word / PPT / Excel / CSV / TXT",
-        type=["docx", "pptx", "xlsx", "xls", "csv", "txt"],
-        key=other_key,
-        disabled=(has_pdf or has_img),
+        "📤 Upload a document (PDF / Image / Excel / Word / PPT)",
+        type=["pdf", "png", "jpg", "jpeg", "webp", "xlsx", "xls", "docx", "pptx"],
+        key=f"any_uploader_{k}",
     )
 
     user_text = st.text_area("✍️ Paste extra text / notes (optional)", height=90)
 
-    if uploaded_pdf is None and uploaded_img is None and uploaded_other is None and not user_text.strip():
-        st.info("Upload a file (PDF/Image/Word/PPT/Excel/CSV/TXT) or paste text → Dashboard + Chat will appear.")
+    if uploaded_file is None and not user_text.strip():
+        st.info("Upload a document (or paste text) → Dashboard + RAG index builds automatically → Start chatting.")
         st.stop()
 
-    full_text_parts = []
-    if uploaded_file is not None:
-        name = uploaded_file.name.lower()
-    
-        with st.spinner("Extracting document text..."):
-            if name.endswith(".pdf"):
-                pdf_text = extract_text_from_pdf_with_ocr(uploaded_file, max_ocr_pages=6)
-                if pdf_text.strip():
-                    full_text_parts.append("=== PDF TEXT ===\n" + pdf_text)
-    
-            elif name.endswith((".png", ".jpg", ".jpeg", ".webp")):
-                img_bytes = normalize_image_to_png_bytes(uploaded_file)
-    
-                # (optional) insights
-                img_fp = hashlib.md5(img_bytes[:20000]).hexdigest()
-                img_cache_key = f"img_insights:{img_fp}"
-                if img_cache_key not in st.session_state:
-                    try:
-                        st.session_state[img_cache_key] = nova_image_insights_brief(img_bytes, image_format="png")
-                    except Exception:
-                        st.session_state[img_cache_key] = ""
-    
-                insights = st.session_state.get(img_cache_key, "")
-                if insights.strip():
-                    st.subheader("Insights")
-                    st.markdown(insights.replace("\n", "  \n"))
-                    full_text_parts.append("=== IMAGE INSIGHTS ===\n" + insights)
-    
-                # OCR text
-                try:
-                    ocr_text = nova_image_to_text(img_bytes, image_format="png")
-                except Exception:
-                    ocr_text = ""
-                if ocr_text.strip():
-                    full_text_parts.append("=== IMAGE TEXT ===\n" + ocr_text)
-    
-            elif name.endswith((".xlsx", ".xls")):
-                excel_text = extract_text_from_excel(uploaded_file)
-                if excel_text.strip():
-                    full_text_parts.append("=== EXCEL TEXT ===\n" + excel_text)
-                else:
-                    st.warning("Could not read Excel. Try re-saving as .xlsx.")
-    
-            elif name.endswith(".docx"):
-                try:
-                    import docx
-                    doc = docx.Document(uploaded_file)
-                    txt = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
-                except Exception:
-                    txt = ""
-                if txt.strip():
-                    full_text_parts.append("=== WORD TEXT ===\n" + txt)
-                else:
-                    st.warning("Could not extract Word text.")
-    
-            elif name.endswith(".pptx"):
-                try:
-                    from pptx import Presentation
-                    prs = Presentation(uploaded_file)
-                    slides_txt = []
-                    for i, slide in enumerate(prs.slides, start=1):
-                        for shape in slide.shapes:
-                            if hasattr(shape, "text") and shape.text.strip():
-                                slides_txt.append(f"[Slide {i}] {shape.text.strip()}")
-                    txt = "\n".join(slides_txt)
-                except Exception:
-                    txt = ""
-                if txt.strip():
-                    full_text_parts.append("=== PPT TEXT ===\n" + txt)
-                else:
-                    st.warning("Could not extract PPT text.")
-    
-    if user_text.strip():
-        full_text_parts.append("=== USER NOTES ===\n" + user_text.strip())
-    
-    full_text = "\n\n".join(full_text_parts).strip()
-    
-    if not full_text:
-        st.error("No text extracted. Try a clearer document or different format.")
-        st.stop()
-
-
+    # --------------------------
+    # Extract text based on type
+    # --------------------------
     full_text_parts: List[str] = []
-    file_bytes_for_fp: Optional[bytes] = None
 
-    # ---------------------------
-    # PDF (Hybrid: pypdf + OCR fallback)
-    # ---------------------------
-    if uploaded_pdf is not None:
-        file_bytes_for_fp = uploaded_pdf.getvalue()
-        pdf_text = extract_text_from_pdf_with_ocr(uploaded_pdf, max_ocr_pages=6)
-        if pdf_text.strip():
-            full_text_parts.append("=== PDF TEXT ===\n" + pdf_text)
+    if uploaded_file is not None:
+        fname = (uploaded_file.name or "").lower()
+        doc_cache_key = "doc_text:" + hashlib.md5((uploaded_file.getvalue() or b"")[:200000]).hexdigest()
 
-    # ---------------------------
-    # Image (OCR + cached insights)
-    # ---------------------------
-    if uploaded_img is not None:
-        img_bytes = normalize_image_to_png_bytes(uploaded_img)
-        file_bytes_for_fp = img_bytes
+        if doc_cache_key in st.session_state:
+            extracted = st.session_state[doc_cache_key]
+        else:
+            extracted = ""
 
-        img_fp = hashlib.md5(img_bytes[:20000]).hexdigest()
-        img_cache_key = f"img_insights:{img_fp}"
+            with st.spinner("Extracting document text..."):
+                if fname.endswith(".pdf"):
+                    extracted = extract_text_from_pdf_with_ocr(uploaded_file, max_ocr_pages=6)
 
-        if img_cache_key not in st.session_state:
-            with st.spinner("💡 Generating image insights..."):
-                try:
-                    st.session_state[img_cache_key] = nova_image_insights_brief(img_bytes, image_format="png")
-                except Exception:
-                    st.session_state[img_cache_key] = ""
+                elif fname.endswith((".png", ".jpg", ".jpeg", ".webp")):
+                    img_bytes = normalize_image_to_png_bytes(uploaded_file)
 
-        insights = st.session_state.get(img_cache_key, "")
-        if insights.strip():
-            st.subheader("Insights")
-            st.markdown(insights.replace("\n", "  \n"))
+                    # brief insights (optional)
+                    img_fp = hashlib.md5(img_bytes[:20000]).hexdigest()
+                    img_cache_key = f"img_insights:{img_fp}"
+                    if img_cache_key not in st.session_state:
+                        try:
+                            st.session_state[img_cache_key] = nova_image_insights_brief(img_bytes, image_format="png")
+                        except Exception:
+                            st.session_state[img_cache_key] = ""
 
-        try:
-            ocr_text = nova_image_to_text(img_bytes, image_format="png")
-        except Exception:
-            ocr_text = ""
+                    insights = st.session_state.get(img_cache_key, "")
+                    if insights.strip():
+                        st.subheader("Insights")
+                        st.markdown(insights.replace("\n", "  \n"))
+                        full_text_parts.append("=== IMAGE INSIGHTS ===\n" + insights)
 
-        if ocr_text.strip():
-            full_text_parts.append("=== IMAGE TEXT ===\n" + ocr_text)
-        if insights.strip():
-            full_text_parts.append("=== IMAGE INSIGHTS ===\n" + insights)
+                    # OCR
+                    try:
+                        extracted = nova_image_to_text(img_bytes, image_format="png")
+                    except Exception:
+                        extracted = ""
 
-    # ---------------------------
-    # Other docs (DOCX/PPTX/XLSX/CSV/TXT)
-    # ---------------------------
-    if uploaded_other is not None:
-        other_bytes = uploaded_other.getvalue()
-        file_bytes_for_fp = other_bytes
-        ext = (uploaded_other.name.split(".")[-1] or "").lower()
+                elif fname.endswith((".xlsx", ".xls")):
+                    extracted = extract_text_from_excel(uploaded_file)
 
-        extracted = ""
-        if ext == "docx":
-            extracted = extract_text_from_docx_bytes(other_bytes)
-        elif ext == "pptx":
-            extracted = extract_text_from_pptx_bytes(other_bytes)
-        elif ext in ("xlsx", "xls"):
-            extracted = extract_text_from_excel_bytes(other_bytes)
-        elif ext == "csv":
-            extracted = extract_text_from_csv_bytes(other_bytes)
-        elif ext == "txt":
-            try:
-                extracted = other_bytes.decode("utf-8", errors="ignore")
-            except Exception:
-                extracted = ""
+                elif fname.endswith(".docx"):
+                    extracted = extract_text_from_docx(uploaded_file)
+
+                elif fname.endswith(".pptx"):
+                    extracted = extract_text_from_pptx(uploaded_file)
+
+            st.session_state[doc_cache_key] = extracted
 
         if extracted.strip():
-            full_text_parts.append(f"=== {ext.upper()} TEXT ===\n" + extracted)
+            full_text_parts.append("=== DOCUMENT TEXT ===\n" + extracted.strip())
         else:
-            st.warning("Could not extract text from this file type in this environment. Try PDF export or paste text.")
+            st.warning("No text extracted from the uploaded document. If it's scanned, try PDF or image with clearer quality.")
 
-    # Notes
     if user_text.strip():
         full_text_parts.append("=== USER NOTES ===\n" + user_text.strip())
 
     full_text = "\n\n".join(full_text_parts).strip()
 
-    # Debug
     with st.expander("🔎 Debug: extracted text length", expanded=False):
         st.write("Characters in full_text:", len(full_text))
         st.write("Preview:", (full_text[:900] + "...") if len(full_text) > 900 else full_text)
 
-    # Gate: don’t run dashboard on partial OCR / empty text
-    if len(full_text.strip()) < MIN_TEXT_FOR_DASH:
-        st.info("Extracting text/OCR… please wait (or upload a clearer document).")
+    if not full_text:
+        st.error("Extracting text/OCR… please wait (or upload a clearer document).")
         st.stop()
 
-    # fingerprint (strong + stable)
-    doc_fp = make_doc_fingerprint(full_text, file_bytes_for_fp)
+    # fingerprint (must be after full_text exists)
+    doc_fp = hashlib.md5(full_text[:20000].encode("utf-8", errors="ignore")).hexdigest()
 
     # ============================================================
     # Dates (cached)
     # ============================================================
     dates_key = f"dates:{doc_fp}"
     if dates_key not in st.session_state:
-        st.session_state[dates_key] = extract_dates_with_events(full_text, max_items=120)
+        st.session_state[dates_key] = extract_dates_with_events(full_text, max_items=140)
     local_dates = st.session_state.get(dates_key, [])
 
     # ============================================================
-    # 📊 Executive Dashboard (HYBRID + first-run stable)
+    # 📊 Executive Dashboard (HYBRID + AI RETRY)
     # ============================================================
     st.subheader("📊 Executive Dashboard")
-    dash_key = f"dashboard:{doc_fp}"
 
+    dash_key = f"dashboard:{doc_fp}"
     dcol1, _ = st.columns([1, 5])
     with dcol1:
         if st.button("🔄 Refresh Dashboard", use_container_width=True):
             st.session_state.pop(dash_key, None)
             st.rerun()
 
-    # Local deterministic mining always
+    # Local deterministic mining ALWAYS runs
     local_dash = local_mine_metrics(full_text)
 
-    # AI dashboard (auto retry). Cached.
+    # AI dashboard cached
     if dash_key not in st.session_state:
         with st.spinner("Analyzing document for dashboard insights..."):
-            ai_dash = safe_ai_dashboard(full_text, retries=2)
-            if not ai_dash:
-                ai_dash = {
-                    "doc_type_guess": "generic",
-                    "summary": "AI dashboard unavailable. Using local fallback.",
-                    "kpis": [],
-                    "derived_insights": [],
-                    "charts": [],
-                    "table_preview": [],
-                    "risk_score": 0,
-                    "risks": [],
-                    "next_actions": [],
-                }
-            st.session_state[dash_key] = ai_dash
+            ai_dash = None
+
+            # Auto-retry once if AI returns invalid/empty (fixes "first time wrong, refresh correct")
+            for attempt in range(2):
+                try:
+                    candidate = generate_dashboard_insights_dynamic(full_text)
+
+                    # Detect known failure patterns
+                    bad_summary = str(candidate.get("summary", "")).lower()
+                    bad = (
+                        not isinstance(candidate, dict)
+                        or "invalid json" in bad_summary
+                        or "could not be generated" in bad_summary
+                        or (not candidate.get("kpis") and not candidate.get("charts"))
+                    )
+                    if not bad:
+                        ai_dash = candidate
+                        break
+                    else:
+                        ai_dash = candidate  # keep best we have, even if weak
+                except Exception:
+                    ai_dash = {
+                        "doc_type_guess": "generic",
+                        "summary": "Dashboard could not be generated (AI error). Using local fallback.",
+                        "kpis": [],
+                        "derived_insights": [],
+                        "charts": [],
+                        "table_preview": [],
+                        "risk_score": 0,
+                        "risks": [],
+                        "next_actions": [],
+                    }
+
+            st.session_state[dash_key] = ai_dash or {}
 
     dashboard = merge_ai_and_local(st.session_state.get(dash_key, {}), local_dash)
 
@@ -823,9 +715,6 @@ if mode == "Single Document":
     table_preview = dashboard.get("table_preview", []) or []
     risks = dashboard.get("risks", []) or []
     next_actions = dashboard.get("next_actions", []) or []
-
-    # quick caption for sanity
-    st.caption(f"text_len={len(full_text)} | AI={'yes' if (st.session_state.get(dash_key, {}).get('kpis') or st.session_state.get(dash_key, {}).get('charts')) else 'no'}")
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Doc Type (Nova)", str(doc_type_guess))
@@ -845,7 +734,7 @@ if mode == "Single Document":
             with cols[i % 3]:
                 st.metric(
                     str(kpi.get("label", "KPI"))[:40],
-                    str(kpi.get("value", "-")),
+                    str(kpi.get("value", "-"))[:60],
                     (str(kpi.get("note", ""))[:40] if kpi.get("note") else None),
                 )
 
@@ -886,7 +775,7 @@ if mode == "Single Document":
         df_dates = pd.DataFrame(local_dates).rename(columns={"label": "Event", "value": "Date"})
         st.dataframe(df_dates, use_container_width=True)
     else:
-        st.caption("No dates detected in the document. (Often means extracted text is sparse)")
+        st.caption("No dates detected in the document (often means extracted text is low).")
 
     if risks:
         st.markdown("### ⚠️ Risks")
@@ -907,7 +796,6 @@ if mode == "Single Document":
         st.session_state["last_doc_fp"] = doc_fp
         with st.spinner("⚙️ Nova is auto-optimizing retrieval settings..."):
             st.session_state["auto_rag_settings"] = recommend_rag_settings(full_text)
-
         st.session_state.pop("suggest_fp", None)
         st.session_state.pop("suggested_questions", None)
         st.session_state.pop("index_fp", None)
@@ -930,6 +818,7 @@ if mode == "Single Document":
         st.session_state.pop("index_fp", None)
 
     build_index_if_needed(full_text, chunk_size=chunk_size, overlap=overlap)
+
     st.divider()
 
     # ============================================================
@@ -945,15 +834,17 @@ if mode == "Single Document":
     st.divider()
 
     # ============================================================
-    # Suggested questions (User interest REMOVED -> always 'General')
+    # Suggested questions (no sidebar interest → fixed "General")
     # ============================================================
     st.markdown("### ✨ Nova-suggested questions (auto from your document)")
-    suggest_fp = f"{doc_fp}:General"
+    suggest_fp = f"{doc_fp}:{USER_INTEREST_DEFAULT}"
 
     if st.session_state.get("suggest_fp") != suggest_fp:
         st.session_state["suggest_fp"] = suggest_fp
         with st.spinner("Generating questions from your document..."):
-            st.session_state["suggested_questions"] = suggest_questions(full_text, user_interest="General", n=6)
+            st.session_state["suggested_questions"] = suggest_questions(
+                full_text, user_interest=USER_INTEREST_DEFAULT, n=6
+            )
 
     qs = st.session_state.get("suggested_questions", [])
     if qs:
@@ -968,13 +859,15 @@ if mode == "Single Document":
 
     if st.button("🔄 Refresh questions", use_container_width=True):
         with st.spinner("Refreshing questions..."):
-            st.session_state["suggested_questions"] = suggest_questions(full_text, user_interest="General", n=6)
+            st.session_state["suggested_questions"] = suggest_questions(
+                full_text, user_interest=USER_INTEREST_DEFAULT, n=6
+            )
         st.rerun()
 
     st.divider()
 
     # ============================================================
-    # Chat (manual + auto-run from suggested)
+    # Chat
     # ============================================================
     st.subheader("3) Chat with your document")
     st.markdown("#### 💬 Ask a question")
@@ -1101,8 +994,3 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
-
-
-
-
-
