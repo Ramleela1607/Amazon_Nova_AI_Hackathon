@@ -353,8 +353,6 @@ def local_mine_metrics(text: str, max_items: int = 80) -> Dict[str, Any]:
         # Build a small "row preview" if line looks like a table row
         if len(nums) >= 2 and len(ln) <= 180:
             out["table_preview"].append({"row": ln})
-            if len(out["table_preview"]) >= 8:
-                pass
 
         for mm in nums[:3]:
             val = mm.group(1)
@@ -364,10 +362,8 @@ def local_mine_metrics(text: str, max_items: int = 80) -> Dict[str, Any]:
             label = " ".join(words[-6:]) if words else "Number"
             loose.append((label, val))
 
-    # Combine
     combined = metric_candidates[:max_items] + loose[:max_items]
 
-    # Build KPI list (top 9 numeric values)
     numeric_items = []
     for label, val in combined:
         num = try_parse_number(val)
@@ -376,29 +372,25 @@ def local_mine_metrics(text: str, max_items: int = 80) -> Dict[str, Any]:
         numeric_items.append((label, num, val))
 
     numeric_items_sorted = sorted(numeric_items, key=lambda x: abs(x[1]), reverse=True)
+
     for label, num, raw in numeric_items_sorted[:9]:
         out["kpis"].append({"label": label[:35], "value": raw, "note": ""})
 
-    # Derived insights (basic stats)
     nums_only = [x[1] for x in numeric_items]
     if len(nums_only) >= 3:
         mn, mx = min(nums_only), max(nums_only)
         avg = sum(nums_only) / len(nums_only)
         out["derived_insights"].append(f"Detected {len(nums_only)} numeric values. Min={mn:g}, Max={mx:g}, Avg={avg:g}.")
-        # Outlier-ish hint
         if mx != 0 and abs(mx) > 10 * max(1e-9, abs(avg)):
             out["derived_insights"].append("Some values are much larger than average (possible totals/outliers).")
 
-    # Chart candidate: bar chart of top values
     if numeric_items_sorted:
         data = []
         for label, num, _raw in numeric_items_sorted[:12]:
             data.append({"x": label[:28], "y": float(num)})
         out["charts"].append({"title": "Top Numeric Values (Auto)", "type": "bar", "data": data})
 
-    # Keep previews small
     out["table_preview"] = out["table_preview"][:8]
-
     return out
 
 
@@ -414,7 +406,6 @@ def merge_ai_and_local(ai: Dict[str, Any], local: Dict[str, Any]) -> Dict[str, A
     if not isinstance(merged.get("derived_insights"), list) or not merged.get("derived_insights"):
         merged["derived_insights"] = local.get("derived_insights", [])
     if not merged.get("summary") or "could not be generated" in str(merged.get("summary", "")).lower():
-        # Keep AI summary if good; else build minimal fallback
         if local.get("kpis") or local.get("charts"):
             merged["summary"] = "Auto dashboard generated from detected numbers/tables in the document."
     return merged
@@ -447,7 +438,6 @@ def reset_session():
     ]:
         st.session_state.pop(k, None)
 
-    # Clear caches
     for kk in list(st.session_state.keys()):
         if str(kk).startswith(("dashboard:", "img_insights:", "dates:", "pdf_text:")):
             st.session_state.pop(kk, None)
@@ -495,10 +485,8 @@ def run_single_question(user_q: str, top_k: int):
     st.session_state["latest_rt"] = rt
 
 
-# Session init
 st.session_state.setdefault("uploader_key", 0)
 
-# Sidebar
 st.sidebar.header("⚙️ Controls")
 st.sidebar.button("🔄 Reset / New session", on_click=reset_session, use_container_width=True)
 mode = st.sidebar.radio("Mode", ["Single Document", "Compare Two Documents"])
@@ -521,13 +509,11 @@ if mode == "Single Document":
 
     full_text_parts = []
 
-    # PDF (with OCR fallback)
     if uploaded_pdf is not None:
         pdf_text = extract_text_from_pdf_with_ocr(uploaded_pdf, max_ocr_pages=6)
         if pdf_text.strip():
             full_text_parts.append("=== PDF TEXT ===\n" + pdf_text)
 
-    # Image (OCR + cached brief insights)
     if uploaded_img is not None:
         img_bytes = normalize_image_to_png_bytes(uploaded_img)
         img_fp = hashlib.md5(img_bytes[:20000]).hexdigest()
@@ -545,7 +531,6 @@ if mode == "Single Document":
             st.subheader("Insights")
             st.markdown(insights.replace("\n", "  \n"))
 
-        # OCR text for retrieval + dates + dashboard mining
         try:
             ocr_text = nova_image_to_text(img_bytes, image_format="png")
         except Exception:
@@ -556,31 +541,22 @@ if mode == "Single Document":
         if insights.strip():
             full_text_parts.append("=== IMAGE INSIGHTS ===\n" + insights)
 
-    # Notes
     if user_text.strip():
         full_text_parts.append("=== USER NOTES ===\n" + user_text.strip())
 
     full_text = "\n\n".join(full_text_parts).strip()
 
-    # Debug: helps when OCR is empty
     with st.expander("🔎 Debug: extracted text length", expanded=False):
         st.write("Characters in full_text:", len(full_text))
         st.write("Preview:", (full_text[:900] + "...") if len(full_text) > 900 else full_text)
 
-    # fingerprint (MUST be before caching keys)
     doc_fp = hashlib.md5(full_text[:20000].encode("utf-8", errors="ignore")).hexdigest()
 
-    # ============================================================
-    # Dates (cached)
-    # ============================================================
     dates_key = f"dates:{doc_fp}"
     if dates_key not in st.session_state:
         st.session_state[dates_key] = extract_dates_with_events(full_text, max_items=120)
     local_dates = st.session_state.get(dates_key, [])
 
-    # ============================================================
-    # 📊 Executive Dashboard (HYBRID)
-    # ============================================================
     st.subheader("📊 Executive Dashboard")
     dash_key = f"dashboard:{doc_fp}"
 
@@ -590,10 +566,8 @@ if mode == "Single Document":
             st.session_state.pop(dash_key, None)
             st.rerun()
 
-    # Local deterministic mining always (fast + stable)
     local_dash = local_mine_metrics(full_text)
 
-    # AI dashboard (cached); if it fails -> we still show local fallback
     if dash_key not in st.session_state:
         with st.spinner("Analyzing document for dashboard insights..."):
             try:
@@ -700,9 +674,6 @@ if mode == "Single Document":
 
     st.divider()
 
-    # ============================================================
-    # Auto RAG settings + Index
-    # ============================================================
     if st.session_state.get("last_doc_fp") != doc_fp:
         st.session_state["last_doc_fp"] = doc_fp
         with st.spinner("⚙️ Nova is auto-optimizing retrieval settings..."):
@@ -733,9 +704,6 @@ if mode == "Single Document":
 
     st.divider()
 
-    # ============================================================
-    # Extract fields
-    # ============================================================
     st.subheader("2) Extract key fields (JSON)")
     doc_type = st.selectbox("Document type", DOC_TYPES, index=0)
     if st.button("🧾 Extract key fields as JSON", use_container_width=True):
@@ -744,17 +712,21 @@ if mode == "Single Document":
         st.code(out, language="json")
 
     st.divider()
-
     # ============================================================
-    # Suggested questions
+    # Suggested questions (NO user_interest)
     # ============================================================
     st.markdown("### ✨ Nova-suggested questions (auto from your document)")
-    suggest_fp = f"{doc_fp}:{user_interest}"
+
+    suggest_fp = f"{doc_fp}:General"
 
     if st.session_state.get("suggest_fp") != suggest_fp:
         st.session_state["suggest_fp"] = suggest_fp
         with st.spinner("Generating questions from your document..."):
-            st.session_state["suggested_questions"] = suggest_questions(full_text, user_interest=user_interest, n=6)
+            st.session_state["suggested_questions"] = suggest_questions(
+                full_text,
+                user_interest="General",
+                n=6
+            )
 
     qs = st.session_state.get("suggested_questions", [])
     if qs:
@@ -763,13 +735,17 @@ if mode == "Single Document":
             with cols[i % 3]:
                 if st.button(q, use_container_width=True, key=f"dynq_{doc_fp}_{i}"):
                     st.session_state["pending_question"] = q
-                    st.rerun()  # IMPORTANT: trigger Q immediately
+                    st.rerun()
     else:
         st.caption("Suggestions unavailable for this upload.")
 
     if st.button("🔄 Refresh questions", use_container_width=True):
         with st.spinner("Refreshing questions..."):
-            st.session_state["suggested_questions"] = suggest_questions(full_text, user_interest=user_interest, n=6)
+            st.session_state["suggested_questions"] = suggest_questions(
+                full_text,
+                user_interest="General",
+                n=6
+            )
         st.rerun()
 
     st.divider()
@@ -902,4 +878,3 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
-
