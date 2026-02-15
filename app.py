@@ -34,7 +34,7 @@ from bedrock_utils import (
 # ============================================================
 # Page + Premium UI (Bright + readable + no top whitespace)
 # ============================================================
-st.set_page_config(page_title="Smart Document Copilot", layout="wide")
+st.set_page_config(page_title="🚀 InsightForge AI", layout="wide")
 
 st.markdown(
     """
@@ -1482,3 +1482,4 @@ else:
 # Handle reset rerun flag (no callback rerun warnings)
 if st.session_state.pop("_do_rerun", False):
     st.rerun()
+
