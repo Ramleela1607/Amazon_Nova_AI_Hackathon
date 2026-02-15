@@ -1414,11 +1414,18 @@ if mode == "Single Document":
     # ============================================================
     st.markdown("### ✨ Nova-suggested questions (auto from your document)")
 
-    suggest_fp = f"{doc_fp}:General"
+    # 🌍 Get detected document language
+    doc_language = st.session_state.get("doc_language", "English")
+    suggest_fp = f"{doc_fp}:{doc_language}"
+    
     if st.session_state.get("suggest_fp") != suggest_fp:
         st.session_state["suggest_fp"] = suggest_fp
-        with st.spinner("Generating suggested questions..."):
-            st.session_state["suggested_questions"] = suggest_questions(full_text, user_interest="General", n=6)
+        with st.spinner(f"Generating suggested questions in {doc_language}..."):
+            st.session_state["suggested_questions"] = suggest_questions(
+                full_text,
+                user_interest=f"Generate questions strictly in {doc_language} language.",
+                n=6
+            )
 
     qs = st.session_state.get("suggested_questions", []) or []
     if qs:
@@ -1529,6 +1536,7 @@ else:
 # Handle reset rerun flag (no callback rerun warnings)
 if st.session_state.pop("_do_rerun", False):
     st.rerun()
+
 
 
 
