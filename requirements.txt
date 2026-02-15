@@ -9,4 +9,4 @@ reportlab
 pymupdf
 openpyxl
 xlrd
-#streamlit-elements==0.1.0
+
