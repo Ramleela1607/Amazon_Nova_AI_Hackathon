@@ -1439,8 +1439,13 @@ if mode == "Single Document":
         st.caption("No suggestions generated (try a clearer upload / more text).")
 
     if st.button("🔄 Refresh questions", use_container_width=True):
-        with st.spinner("Refreshing questions..."):
-            st.session_state["suggested_questions"] = suggest_questions(full_text, user_interest="General", n=6)
+        doc_language = st.session_state.get("doc_language", "English")
+        with st.spinner(f"Refreshing questions in {doc_language}..."):
+            st.session_state["suggested_questions"] = suggest_questions(
+                full_text,
+                user_interest=f"Generate questions strictly in {doc_language} language.",
+                n=6
+            )
         st.rerun()
 
     st.divider()
@@ -1536,6 +1541,7 @@ else:
 # Handle reset rerun flag (no callback rerun warnings)
 if st.session_state.pop("_do_rerun", False):
     st.rerun()
+
 
 
 
