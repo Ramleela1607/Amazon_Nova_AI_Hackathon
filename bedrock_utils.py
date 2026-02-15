@@ -593,19 +593,29 @@ def _safe_json_loads(txt: str) -> Dict[str, Any] | None:
     return None
 
 
-def generate_dashboard_insights_dynamic(doc_text: str, max_metrics: int = 40) -> Dict[str, Any]:
+def generate_dashboard_insights_dynamic(
+    doc_text: str,
+    max_metrics: int = 40,
+    output_language: str = "English",
+) -> Dict[str, Any]:
     """
-    Dynamic dashboard builder:
-    - Works for ANY PDF/image text (numbers, tables, lists)
-    - Returns strict JSON for charts + insights
+    Dynamic executive dashboard generator (Nova-powered)
+
+    Improvements:
+    - Multilingual output support
+    - Better KPI filtering (reduces Excel junk numbers)
+    - Strong JSON enforcement
+    - Safer fallback handling
     """
 
-    # ✅ Guard: empty text => return fallback (prevents Nova call on nothing)
+    # -----------------------------
+    # Guard: Empty / weak text
+    # -----------------------------
     text = (doc_text or "").strip()
     if len(text) < 40:
         return {
             "doc_type_guess": "generic",
-            "summary": "Not enough readable text extracted. If this is a scanned PDF, enable OCR fallback.",
+            "summary": f"Not enough readable text extracted. Please upload a clearer document.",
             "kpis": [],
             "derived_insights": [],
             "charts": [],
@@ -617,49 +627,90 @@ def generate_dashboard_insights_dynamic(doc_text: str, max_metrics: int = 40) ->
 
     brt = get_bedrock_runtime(GEN_REGION)
 
-    # --- Normalize ---
+    # -----------------------------
+    # Normalize text
+    # -----------------------------
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{2,}", "\n", text)
 
-    # --- Local mining 1: "Label: value" ---
+    # -----------------------------
+    # Local mining 1: Label: Value
+    # -----------------------------
     metric_candidates: List[Dict[str, str]] = []
     for line in text.splitlines():
         ln = line.strip()
         if not ln or len(ln) < 4:
             continue
+
         m = re.search(r"(.{3,60}?)\s*[:\-–—]\s*([^\n]{1,40})$", ln)
         if m:
-            metric_candidates.append({"label": m.group(1).strip(), "value": m.group(2).strip()})
+            label = m.group(1).strip()
+            value = m.group(2).strip()
 
-    # --- Local mining 2: loose numbers with nearby words (tables/OCR) ---
+            # Avoid obvious date labels
+            if any(x in label.lower() for x in ["date", "year", "month", "timeline"]):
+                continue
+
+            metric_candidates.append({"label": label, "value": value})
+
+    # -----------------------------
+    # Local mining 2: Loose numbers
+    # -----------------------------
     loose_candidates: List[Dict[str, str]] = []
     num_re = re.compile(r"(-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?)")
+
     for line in text.splitlines():
         ln = line.strip()
         if not ln:
             continue
+
         nums = list(num_re.finditer(ln))
         if not nums:
             continue
-        for mm in nums[:3]:
+
+        for mm in nums[:2]:
             num = mm.group(1)
+
+            # Filter small noise numbers
+            try:
+                numeric_val = float(num.replace(",", ""))
+                if abs(numeric_val) < 10:
+                    continue
+                if 1900 <= numeric_val <= 2100:
+                    continue  # avoid year junk
+            except Exception:
+                continue
+
             left = re.sub(r"\s+", " ", ln[:mm.start()].strip())
             words = left.split()
-            label = " ".join(words[-6:]) if words else "Number"
+            label = " ".join(words[-5:]) if words else "Metric"
+
+            if len(label) < 3:
+                continue
+
             loose_candidates.append({"label": label, "value": num})
 
     metric_candidates = metric_candidates[:max_metrics]
     loose_candidates = loose_candidates[:max_metrics]
+
     excerpt = text[:9000]
 
+    # -----------------------------
+    # Multilingual + Strict JSON Prompt
+    # -----------------------------
     prompt = f"""
-You are an Executive Dashboard generator for ANY document.
+You are a professional Executive Dashboard generator.
 
-Return ONLY valid JSON (no markdown/backticks).
+⚠️ IMPORTANT RULES:
+- Respond STRICTLY in {output_language}.
+- Output MUST be valid JSON.
+- Do NOT include markdown.
+- Do NOT include explanations outside JSON.
 
 Return JSON with EXACT keys:
+
 {{
-  "doc_type_guess": "generic",
+  "doc_type_guess": "string",
   "summary": "string",
   "kpis": [{{"label":"", "value":"", "note":""}}],
   "derived_insights": ["string"],
@@ -667,51 +718,49 @@ Return JSON with EXACT keys:
     {{
       "title": "string",
       "type": "bar|line",
-      "x": "string",
-      "y": "string",
       "data": [{{"x":"", "y": 0}}]
     }}
   ],
-  "table_preview": [{{"col1":"", "col2":"", "col3":""}}], 
+  "table_preview": [{{"col1":"", "col2":"", "col3":""}}],
   "risk_score": 0,
   "risks": ["string"],
   "next_actions": ["string"]
 }}
 
-Rules:
-- Use ONLY what is supported by text/signals (no invention).
-- KPIs: select the most important 6–10 values.
-- Derived calculations MUST be dynamic:
-  - min/max/avg when there are multiple numbers
-  - deltas / % change when pairs/series exist
-  - anomalies if outliers exist
-- Charts MUST be dynamic:
-  - If many numeric items -> bar chart of top values
-  - If series (stages/months/years) -> line chart
-- risk_score 0–100 based on risks detected.
+STRICT INSTRUCTIONS:
+- Use ONLY facts supported by text.
+- Select meaningful KPIs (6–10 maximum).
+- Ignore random standalone numbers.
+- Compute min/max/avg if multiple numeric values exist.
+- Detect trends if chronological data exists.
+- risk_score between 0–100.
 
 RAW EXCERPT:
 {excerpt}
 
-CANDIDATE METRICS (label/value):
+CANDIDATE METRICS:
 {json.dumps(metric_candidates, ensure_ascii=False)}
 
-LOOSE NUMERIC SIGNALS (label/value):
+LOOSE NUMERIC SIGNALS:
 {json.dumps(loose_candidates, ensure_ascii=False)}
 """.strip()
 
+    # -----------------------------
+    # Bedrock Call
+    # -----------------------------
     try:
         resp = brt.converse(
             modelId=NOVA_LITE_MODEL_ID,
             messages=[{"role": "user", "content": [{"text": prompt}]}],
-            inferenceConfig={"maxTokens": 1000, "temperature": 0.15, "topP": 0.9},
+            inferenceConfig={"maxTokens": 1200, "temperature": 0.1, "topP": 0.9},
         )
+
         txt = (resp["output"]["message"]["content"][0]["text"] or "").strip()
+
     except Exception:
-        # Bedrock call failed (permissions/region/etc.)
         return {
             "doc_type_guess": "generic",
-            "summary": "Dashboard generation failed (Bedrock call error). Check logs for Bedrock runtime exception.",
+            "summary": f"Dashboard generation failed due to Bedrock runtime error.",
             "kpis": [],
             "derived_insights": [],
             "charts": [],
@@ -721,9 +770,12 @@ LOOSE NUMERIC SIGNALS (label/value):
             "next_actions": [],
         }
 
+    # -----------------------------
+    # Safe JSON Parsing
+    # -----------------------------
     out = _safe_json_loads(txt)
+
     if isinstance(out, dict):
-        # Ensure required keys exist even if model omitted some
         out.setdefault("doc_type_guess", "generic")
         out.setdefault("summary", "")
         out.setdefault("kpis", [])
@@ -735,10 +787,10 @@ LOOSE NUMERIC SIGNALS (label/value):
         out.setdefault("next_actions", [])
         return out
 
-    # fallback
+    # Fallback
     return {
         "doc_type_guess": "generic",
-        "summary": "Dashboard could not be generated for this upload (invalid JSON from model).",
+        "summary": f"Dashboard could not be generated (invalid JSON from model).",
         "kpis": [],
         "derived_insights": [],
         "charts": [],
@@ -747,4 +799,3 @@ LOOSE NUMERIC SIGNALS (label/value):
         "risks": [],
         "next_actions": [],
     }
-
