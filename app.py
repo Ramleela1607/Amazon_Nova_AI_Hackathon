@@ -1132,6 +1132,10 @@ if mode == "Single Document":
         extracted_text_parts.append("=== USER NOTES ===\n" + user_text.strip())
 
     full_text = "\n\n".join(extracted_text_parts).strip()
+    # 🌍 Detect document language
+    doc_language = detect_document_language(full_text)
+    st.session_state["doc_language"] = doc_language
+    st.caption(f"🌍 Detected Language: {doc_language}")
 
     # Store extracted text for download
     text_cache_key = f"extracted_text:{upload_fp}"
@@ -1517,6 +1521,7 @@ else:
 # Handle reset rerun flag (no callback rerun warnings)
 if st.session_state.pop("_do_rerun", False):
     st.rerun()
+
 
 
 
