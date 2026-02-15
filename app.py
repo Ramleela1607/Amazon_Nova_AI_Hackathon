@@ -503,12 +503,6 @@ st.sidebar.header("⚙️ Controls")
 st.sidebar.button("🔄 Reset / New session", on_click=reset_session, use_container_width=True)
 mode = st.sidebar.radio("Mode", ["Single Document", "Compare Two Documents"])
 
-user_interest = st.sidebar.selectbox(
-    "User interest",
-    ["General", "Finance", "HR/Recruiter", "Legal", "Research/Student", "Operations"],
-    index=0,
-)
-
 st.sidebar.markdown("---")
 
 # ============================================================
@@ -908,3 +902,4 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
