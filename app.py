@@ -252,26 +252,38 @@ def extract_text_from_pptx_bytes(ppt_bytes: bytes) -> str:
     except Exception:
         return ""
 
-def extract_text_from_excel_bytes(xls_bytes: bytes, max_sheets: int = 5, max_rows: int = 60, max_cols: int = 12) -> str:
+def extract_text_from_excel(uploaded_file) -> str:
+    """
+    Reads all sheets from an Excel and returns:
+    - A compact preview text (good for Nova + local mining)
+    - Includes headers + first rows of each sheet
+    """
     try:
-        bio = io.BytesIO(xls_bytes)
-        xl = pd.ExcelFile(bio)
-        parts = []
-        for i, sheet in enumerate(xl.sheet_names[:max_sheets]):
-            df = xl.parse(sheet_name=sheet, header=None)
-            df = df.iloc[:max_rows, :max_cols]
-            df = df.fillna("")
-            lines = []
-            for r in range(df.shape[0]):
-                row = [str(df.iat[r, c]).strip() for c in range(df.shape[1])]
-                row = [x for x in row if x and x.lower() != "nan"]
-                if row:
-                    lines.append(" | ".join(row))
-            if lines:
-                parts.append(f"--- Sheet: {sheet} ---\n" + "\n".join(lines))
-        return "\n\n".join(parts).strip()
+        xls = pd.ExcelFile(uploaded_file)
     except Exception:
         return ""
+
+    parts = []
+    for sheet in xls.sheet_names:
+        try:
+            df = pd.read_excel(xls, sheet_name=sheet)
+        except Exception:
+            continue
+
+        if df is None or df.empty:
+            continue
+
+        df = df.copy()
+        df.columns = [str(c) for c in df.columns]
+        # limit size to avoid massive prompt
+        preview = df.head(25)
+
+        parts.append(f"\n\n=== EXCEL SHEET: {sheet} ===\n")
+        parts.append("COLUMNS: " + ", ".join(preview.columns.tolist()) + "\n")
+        parts.append(preview.to_csv(index=False))
+
+    return "".join(parts).strip()
+
 
 def extract_text_from_csv_bytes(csv_bytes: bytes, max_rows: int = 80, max_cols: int = 12) -> str:
     try:
@@ -1000,5 +1012,6 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
