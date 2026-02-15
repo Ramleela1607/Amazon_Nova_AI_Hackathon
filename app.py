@@ -820,6 +820,13 @@ if mode == "Single Document":
         )
 
     clear_active_if_none(uploaded_pdf, uploaded_img, uploaded_xl, uploaded_doc, uploaded_ppt)
+    # Draggable tiles support
+    try:
+        from streamlit_elements import elements, mui
+        ELEMENTS_OK = True
+    except Exception:
+        ELEMENTS_OK = False
+
 
     if uploaded_pdf is None and uploaded_img is None and uploaded_xl is None and uploaded_doc is None and uploaded_ppt is None and not user_text.strip():
         st.info("Upload a PDF/Image/Excel/Word/PPT (or paste text) → Dashboard + Questions + Chat.")
@@ -1309,4 +1316,5 @@ else:
 
 if st.session_state.pop("_do_rerun", False):
     st.rerun()
+
 
