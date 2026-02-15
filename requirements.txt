@@ -7,3 +7,5 @@ faiss-cpu
 numpy
 reportlab
 pymupdf
+openpyxl
+xlrd
