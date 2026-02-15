@@ -9,4 +9,5 @@ reportlab
 pymupdf
 openpyxl
 xlrd
+langdetect
 
