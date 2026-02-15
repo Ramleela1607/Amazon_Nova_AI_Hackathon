@@ -323,7 +323,14 @@ def extract_dates_with_events(text: str, max_items: int = 120) -> List[Dict[str,
 # ============================================================
 # Dashboard (local mining + AI merge)
 # ============================================================
-def local_dashboard_from_text(text: str, max_items: int = 80) -> Dict[str, Any]:
+def local_dashboard_from_text(text: str, max_items: int = 120) -> Dict[str, Any]:
+    """
+    Stronger deterministic mining for OCR/PDF:
+    - Prefers explicit metrics (Label: Value) and (Label 4,250)
+    - Ignores years/dates and small junk integers
+    - Dedupes values
+    - Produces cleaner KPI labels + chart
+    """
     out = {"kpis": [], "charts": [], "table_preview": [], "derived_insights": []}
     if not text or not str(text).strip():
         return out
@@ -332,56 +339,131 @@ def local_dashboard_from_text(text: str, max_items: int = 80) -> Dict[str, Any]:
     t = re.sub(r"[ \t]+", " ", t)
     t = re.sub(r"\n{3,}", "\n\n", t)
 
-    metric_candidates = []
-    for line in t.splitlines():
-        ln = line.strip()
-        if len(ln) < 4:
-            continue
-        m = re.search(r"^(.{2,60}?)\s*[:\-]\s*([^\n]{1,60})$", ln)
-        if m:
-            metric_candidates.append((m.group(1).strip(), m.group(2).strip()))
+    # Join broken lines lightly to catch "Users Onboarded\n4,250"
+    lines = [ln.strip() for ln in t.split("\n") if ln.strip()]
+    joined = []
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        # if line has no number but next line is mainly a number -> join
+        if i + 1 < len(lines):
+            nxt = lines[i + 1]
+            if (not re.search(r"\d", ln)) and re.fullmatch(r"[₹$€]?\s*[\d,]+(\.\d+)?%?", nxt):
+                joined.append(f"{ln} {nxt}")
+                i += 2
+                continue
+            if (not re.search(r"\d", ln)) and re.search(r"^[\d,]+(\.\d+)?%?$", nxt):
+                joined.append(f"{ln} {nxt}")
+                i += 2
+                continue
+            # common OCR: "Users Onboarded" then "4,250"
+            if (not re.search(r"\d", ln)) and re.fullmatch(r"[\d,]+(\.\d+)?", nxt):
+                joined.append(f"{ln}: {nxt}")
+                i += 2
+                continue
+        joined.append(ln)
+        i += 1
 
+    # Helpers
+    months = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*"
+    date_like = re.compile(rf"({months}\s+\d{{1,2}}|\d{{1,2}}[/-]\d{{1,2}}[/-]\d{{2,4}}|\b\d{{4}}\b)", re.IGNORECASE)
+
+    def is_year(n: float) -> bool:
+        return 1900 <= n <= 2100 and float(int(n)) == float(n)
+
+    def bad_label(lbl: str) -> bool:
+        s = (lbl or "").strip().lower()
+        if not s or s in {"number", "value", "metric"}:
+            return True
+        if len(s) < 3:
+            return True
+        # avoid date-driven labels
+        if any(x in s for x in ["date", "uat", "window", "kickoff", "go-live", "timeline"]):
+            return True
+        return False
+
+    # Extract candidates with priority
+    candidates = []
+
+    # 1) Strong: Label: Value
+    for ln in joined:
+        m = re.search(r"^(.{2,60}?)\s*[:\-]\s*([₹$€]?\s*[\d,]+(?:\.\d+)?%?)\s*$", ln)
+        if m:
+            label = m.group(1).strip()
+            val = m.group(2).strip()
+            candidates.append((label, val, 3))
+
+    # 2) Medium: "Label 4,250" (no colon)
+    for ln in joined:
+        m = re.search(r"^(.{3,60}?)\s+([₹$€]?\s*[\d,]+(?:\.\d+)?%?)\s*$", ln)
+        if m:
+            label = m.group(1).strip()
+            val = m.group(2).strip()
+            # avoid things that look like dates
+            if date_like.search(ln):
+                continue
+            candidates.append((label, val, 2))
+
+    # 3) Weak: any numbers with a nearby label
     num_re = re.compile(r"(-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?)")
-    loose = []
-    for line in t.splitlines():
-        ln = line.strip()
-        if not ln:
-            continue
+    for ln in joined:
         nums = list(num_re.finditer(ln))
         if not nums:
             continue
-        if len(nums) >= 2 and len(ln) <= 200:
+
+        # table-ish preview
+        if len(nums) >= 2 and len(ln) <= 220:
             out["table_preview"].append({"row": ln})
-        for mm in nums[:3]:
-            val = mm.group(1)
+
+        for mm in nums[:2]:
+            raw = mm.group(1)
             left = re.sub(r"\s+", " ", ln[:mm.start()].strip())
-            words = left.split()
-            label = " ".join(words[-6:]) if words else "Number"
-            loose.append((label, val))
+            label = " ".join(left.split()[-6:]) if left else "Number"
+            candidates.append((label, raw, 1))
 
-    combined = metric_candidates[:max_items] + loose[:max_items]
+    # Convert to numeric, filter junk, dedupe
+    numeric = []
+    seen = set()
 
-    numeric_items = []
-    for label, val in combined:
-        num = try_parse_number(val)
+    for label, raw, prio in candidates[:max_items * 3]:
+        num = try_parse_number(raw)
         if num is None:
             continue
-        numeric_items.append((label, num, val))
 
-    numeric_sorted = sorted(numeric_items, key=lambda x: abs(x[1]), reverse=True)
+        # Filters
+        if is_year(num):
+            continue
+        if abs(num) < 10:  # tiny integers usually junk in OCR
+            continue
+        if date_like.search(label):
+            continue
+        if bad_label(label):
+            continue
 
-    for label, _num, raw in numeric_sorted[:9]:
+        key = (label.lower().strip(), round(float(num), 6))
+        if key in seen:
+            continue
+        seen.add(key)
+
+        numeric.append((prio, label, float(num), raw))
+
+    # Pick best KPIs: sort by priority then magnitude
+    numeric_sorted = sorted(numeric, key=lambda x: (x[0], abs(x[2])), reverse=True)
+
+    for prio, label, num, raw in numeric_sorted[:9]:
         out["kpis"].append({"label": label[:40], "value": raw, "note": ""})
 
-    nums_only = [x[1] for x in numeric_items]
-    if len(nums_only) >= 3:
-        mn, mx = min(nums_only), max(nums_only)
-        avg = sum(nums_only) / len(nums_only)
-        out["derived_insights"].append(f"Detected {len(nums_only)} numeric values. Min={mn:g}, Max={mx:g}, Avg={avg:g}.")
+    # Derived insights
+    vals = [x[2] for x in numeric_sorted]
+    if len(vals) >= 3:
+        mn, mx = min(vals), max(vals)
+        avg = sum(vals) / len(vals)
+        out["derived_insights"].append(f"Detected {len(vals)} numeric metrics (filtered). Min={mn:g}, Max={mx:g}, Avg={avg:g}.")
 
+    # Chart from KPIs
     if numeric_sorted:
-        data = [{"x": lab[:28], "y": float(num)} for lab, num, _raw in numeric_sorted[:12]]
-        out["charts"].append({"title": "Top Numeric Values (Auto)", "type": "bar", "data": data})
+        data = [{"x": lab[:28], "y": float(v)} for _p, lab, v, _raw in numeric_sorted[:12]]
+        out["charts"].append({"title": "Top Metrics (Filtered)", "type": "bar", "data": data})
 
     out["table_preview"] = out["table_preview"][:8]
     return out
@@ -935,4 +1017,5 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
