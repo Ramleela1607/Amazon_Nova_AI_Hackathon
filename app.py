@@ -818,10 +818,6 @@ if mode == "Single Document":
             "• Scanned PDFs: OCR runs automatically\n"
             "• Excel: shows table previews + meaningful KPIs"
         )
-        if ELEMENTS_OK:
-            st.success("✅ Draggable tiles: Enabled")
-        else:
-            st.warning("ℹ️ Draggable tiles: install `streamlit-elements` to enable")
 
     clear_active_if_none(uploaded_pdf, uploaded_img, uploaded_xl, uploaded_doc, uploaded_ppt)
 
@@ -1313,3 +1309,4 @@ else:
 
 if st.session_state.pop("_do_rerun", False):
     st.rerun()
+
