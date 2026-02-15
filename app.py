@@ -562,6 +562,13 @@ if mode == "Single Document":
     has_pdf = existing_pdf is not None
     has_img = existing_img is not None
     has_other = existing_other is not None
+    
+    uploaded_file = st.file_uploader(
+    "📤 Upload a document (PDF/Image/Excel/Word/PPT)",
+    type=["pdf", "png", "jpg", "jpeg", "webp", "xlsx", "xls", "docx", "pptx"],
+    key=f"any_uploader_{k}"
+    )
+
 
     uploaded_pdf = st.file_uploader(
         "📤 Upload a PDF",
@@ -1012,6 +1019,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
