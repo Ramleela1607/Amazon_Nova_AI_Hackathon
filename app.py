@@ -943,7 +943,11 @@ def run_single_question(user_q: str, top_k: int):
 
     with st.spinner("Thinking with Nova Lite..."):
         t0 = time.time()
-        ans = ask_with_evidence(user_q, ctx)
+        lang = st.session_state.get("doc_language", "English")
+        ans = ask_with_evidence(
+            f"Answer strictly in {lang} language.\n\nQuestion: {user_q}",
+            ctx
+        )
         rt = round(time.time() - t0, 2)
 
     st.session_state["latest_q"] = user_q
@@ -1525,6 +1529,7 @@ else:
 # Handle reset rerun flag (no callback rerun warnings)
 if st.session_state.pop("_do_rerun", False):
     st.rerun()
+
 
 
 
