@@ -31,43 +31,95 @@ from bedrock_utils import (
     generate_dashboard_insights_dynamic,  # AI dashboard (may fail JSON -> hybrid fallback)
 )
 
+# ------------------------------------------------------------
+# OPTIONAL: Draggable tiles (UI only)
+# ------------------------------------------------------------
+try:
+    from streamlit_elements import elements, dashboard as el_dashboard, mui
+    ELEMENTS_OK = True
+except Exception:
+    ELEMENTS_OK = False
+
+
 # ============================================================
-# Page + Premium UI
+# Page + Premium UI  (UPDATED: brighter + readable + no top whitespace)
 # ============================================================
 st.set_page_config(page_title="Smart Document Copilot", layout="wide")
 
 st.markdown(
     """
 <style>
+/* ------------------------------
+   Remove top whitespace / make BG cover everything
+------------------------------ */
+html, body {
+  height: 100% !important;
+  background: transparent !important;
+}
+div[data-testid="stAppViewContainer"]{
+  background: transparent !important;
+}
+header[data-testid="stHeader"]{
+  background: transparent !important;
+  height: 0px !important;
+}
+div[data-testid="stToolbar"]{
+  right: 0.75rem;
+}
+section.main > div{
+  padding-top: 0.6rem !important;
+}
+.block-container{
+  padding-top: 0.7rem !important;
+}
+
+/* ------------------------------
+   Bright Neon Glass UI (visible text)
+------------------------------ */
+:root{
+  --ink: #07101f;
+  --muted: rgba(7,16,31,0.70);
+
+  --glass: rgba(255,255,255,0.78);
+  --glass2: rgba(255,255,255,0.86);
+  --stroke: rgba(15,23,42,0.12);
+
+  --neonA: #4f46e5; /* indigo */
+  --neonB: #06b6d4; /* cyan */
+  --neonC: #22c55e; /* green */
+  --neonD: #f97316; /* orange */
+}
+
 /* Animated premium background */
 .stApp {
-  background: radial-gradient(circle at 10% 20%, rgba(224,242,254,0.98), transparent 46%),
-              radial-gradient(circle at 90% 10%, rgba(252,231,243,0.95), transparent 46%),
-              radial-gradient(circle at 50% 90%, rgba(236,252,203,0.95), transparent 52%),
-              linear-gradient(120deg, rgba(255,255,255,0.90), rgba(255,255,255,0.78));
+  background:
+    radial-gradient(900px circle at 14% 16%, rgba(79,70,229,0.22), transparent 60%),
+    radial-gradient(820px circle at 88% 14%, rgba(6,182,212,0.18), transparent 58%),
+    radial-gradient(1000px circle at 70% 88%, rgba(34,197,94,0.14), transparent 62%),
+    radial-gradient(900px circle at 22% 88%, rgba(249,115,22,0.10), transparent 62%),
+    linear-gradient(135deg, rgba(255,255,255,0.94), rgba(245,247,255,0.86));
   background-attachment: fixed;
-  color: #0b1220 !important;
+  color: var(--ink) !important;
   position: relative;
   overflow-x: hidden;
 }
 .stApp::before{
   content:"";
   position: fixed;
-  inset: 0;
+  inset: -20px;
   z-index: 0;
   pointer-events: none;
   background:
-    radial-gradient(circle at 15% 35%, rgba(99,102,241,0.24), transparent 42%),
-    radial-gradient(circle at 75% 20%, rgba(16,185,129,0.20), transparent 42%),
-    radial-gradient(circle at 70% 80%, rgba(236,72,153,0.16), transparent 44%),
-    radial-gradient(circle at 25% 85%, rgba(14,165,233,0.18), transparent 46%);
-  filter: blur(20px);
+    radial-gradient(circle at 18% 32%, rgba(79,70,229,0.18), transparent 46%),
+    radial-gradient(circle at 76% 22%, rgba(6,182,212,0.16), transparent 46%),
+    radial-gradient(circle at 70% 82%, rgba(34,197,94,0.12), transparent 48%);
+  filter: blur(18px);
   animation: floatBg 14s ease-in-out infinite alternate;
-  opacity: 0.92;
+  opacity: 0.95;
 }
 @keyframes floatBg {
-  0%   { transform: translate3d(-18px, -16px, 0) scale(1.02); }
-  50%  { transform: translate3d(22px, 14px, 0) scale(1.06); }
+  0%   { transform: translate3d(-16px, -14px, 0) scale(1.02); }
+  50%  { transform: translate3d(22px, 12px, 0) scale(1.06); }
   100% { transform: translate3d(-10px, 22px, 0) scale(1.03); }
 }
 
@@ -80,66 +132,92 @@ div[data-testid="stAppViewContainer"]{
   z-index: 1;
 }
 
-/* Typography */
-html, body, [class*="css"], p, span, div {
-  color: #0b1220 !important;
+/* Typography: ensure visible */
+html, body, [class*="css"], p, span, div, label {
+  color: var(--ink) !important;
 }
 h1, h2, h3 {
-  color: #07101f !important;
+  color: #061022 !important;
   text-shadow: 0 1px 0 rgba(255,255,255,0.65);
 }
 
 /* Sidebar frosted */
 section[data-testid="stSidebar"]{
-  background: rgba(255,255,255,0.80) !important;
+  background: rgba(255,255,255,0.82) !important;
   backdrop-filter: blur(14px);
-  border-right: 1px solid rgba(15,23,42,0.10);
+  border-right: 1px solid var(--stroke);
 }
 section[data-testid="stSidebar"] *{
-  color: #0b1220 !important;
+  color: var(--ink) !important;
 }
 
 /* Cards / expanders */
 div[data-testid="stExpander"] {
   border-radius: 18px;
-  border: 1px solid rgba(15,23,42,0.10);
-  background: rgba(255,255,255,0.90);
-  box-shadow: 0 10px 24px rgba(2,6,23,0.07);
+  border: 1px solid var(--stroke);
+  background: var(--glass2);
+  box-shadow: 0 10px 28px rgba(2,6,23,0.08);
 }
 
 /* Inputs */
 div[data-baseweb="input"] input, textarea {
-  background: rgba(255,255,255,0.96) !important;
-  color: #0b1220 !important;
+  background: rgba(255,255,255,0.92) !important;
+  color: var(--ink) !important;
   border-radius: 14px !important;
-  border: 1px solid rgba(15,23,42,0.16) !important;
+  border: 1px solid rgba(15,23,42,0.18) !important;
 }
 
 /* Buttons */
 .stButton button {
   border-radius: 14px;
-  border: 1px solid rgba(15,23,42,0.14);
-  background: rgba(255,255,255,0.94);
-  color: #0b1220 !important;
-  font-weight: 750;
+  border: 1px solid rgba(79,70,229,0.26);
+  background: linear-gradient(135deg, rgba(79,70,229,0.10), rgba(6,182,212,0.08));
+  color: var(--ink) !important;
+  font-weight: 800;
   transition: transform 120ms ease, box-shadow 120ms ease;
 }
 .stButton button:hover {
   transform: translateY(-1px);
-  border: 1px solid rgba(99,102,241,0.50);
-  box-shadow: 0 12px 28px rgba(99,102,241,0.18);
+  box-shadow: 0 12px 28px rgba(79,70,229,0.16);
 }
 
-/* Small pill caption */
+/* Pills */
 .pill {
   display:inline-block;
-  padding:6px 10px;
+  padding:7px 11px;
   border-radius:999px;
   border:1px solid rgba(15,23,42,0.12);
-  background: rgba(255,255,255,0.86);
-  font-weight: 650;
+  background: rgba(255,255,255,0.88);
+  font-weight: 750;
   font-size: 13px;
 }
+.pill b{ color:#061022; }
+.small-muted{ color: var(--muted) !important; font-size: 0.92rem; }
+
+/* Tile look (for draggable dashboard) */
+.tile {
+  border-radius: 18px;
+  border: 1px solid rgba(15,23,42,0.12);
+  background: rgba(255,255,255,0.86);
+  box-shadow: 0 12px 30px rgba(2,6,23,0.09);
+  padding: 12px 14px;
+}
+.tile .title{
+  font-weight: 900;
+  font-size: 0.95rem;
+  margin-bottom: 6px;
+}
+.tile .drag{
+  cursor: move;
+  user-select: none;
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px dashed rgba(79,70,229,0.30);
+  background: rgba(79,70,229,0.06);
+  margin-bottom: 10px;
+}
+a { color: #1d4ed8 !important; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -147,12 +225,14 @@ div[data-baseweb="input"] input, textarea {
 
 st.title("📄 Smart Document Copilot")
 st.markdown(
-    "<div class='pill'>Amazon Nova on Bedrock • Multimodal • RAG • Evidence • Dashboard • Compare • Report</div>",
+    "<div class='pill'><b>Amazon Nova</b> • Bedrock • Multimodal • RAG • Evidence • Dashboard • Compare • Report</div>"
+    "<div class='small-muted'>Bright Neon Glass UI • Text always readable • Optional draggable tiles</div>",
     unsafe_allow_html=True,
 )
 
 # ============================================================
 # Helpers (Chunking, Extraction, OCR, Dates, Dashboard Mining)
+# (LOGIC UNCHANGED below)
 # ============================================================
 
 def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150) -> List[str]:
@@ -410,7 +490,6 @@ def extract_dates_with_events(text: str, max_items: int = 140) -> List[Dict[str,
 
     return results
 
-
 def local_dashboard_from_text(text: str, max_items: int = 140) -> Dict[str, Any]:
     """
     Strong deterministic miner for OCR/PDF/Excel text:
@@ -455,7 +534,6 @@ def local_dashboard_from_text(text: str, max_items: int = 140) -> Dict[str, Any]
             return True
         if len(s) < 3:
             return True
-        # avoid date/timeline rows as KPIs
         if any(x in s for x in ["date", "uat", "window", "timeline", "kickoff", "go-live", "present"]):
             return True
         return False
@@ -742,6 +820,10 @@ if mode == "Single Document":
             "• Scanned PDFs: OCR runs automatically\n"
             "• Excel: shows table previews + dashboard"
         )
+        if ELEMENTS_OK:
+            st.success("✅ Draggable tiles: Enabled")
+        else:
+            st.warning("ℹ️ Draggable tiles: install `streamlit-elements` to enable")
 
     clear_active_if_none(uploaded_pdf, uploaded_img, uploaded_xl, uploaded_doc, uploaded_ppt)
 
@@ -877,7 +959,6 @@ if mode == "Single Document":
     st.subheader("📊 Executive Dashboard")
     dash_key = f"dashboard:{doc_fp}"
 
-    # Always compute dashboard once per doc_fp; refresh recomputes cleanly
     dcol1, dcol2, dcol3 = st.columns([1, 1, 3])
     with dcol1:
         if st.button("🔄 Refresh Dashboard", use_container_width=True):
@@ -934,34 +1015,120 @@ if mode == "Single Document":
     risks = dashboard.get("risks", []) or []
     next_actions = dashboard.get("next_actions", []) or []
 
-    # Dashboard top row
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Doc Type (Nova)", str(doc_type_guess))
-    c2.metric("Risk Score", f"{risk_score}/100")
-    with c3:
-        st.caption("Risk Meter")
-        st.progress(min(max(risk_score, 0), 100))
+    # ------------------------------------------------------------
+    # UI: Draggable tiles (ONLY UI)
+    # ------------------------------------------------------------
+    if ELEMENTS_OK:
+        st.markdown("<div class='small-muted'>Drag tiles by the <b>drag handle</b> to rearrange your dashboard.</div>", unsafe_allow_html=True)
 
-    if summary.strip():
-        st.markdown("### 🧾 Executive Summary")
-        st.markdown(summary)
+        st.session_state.setdefault(
+            "dash_layout",
+            [
+                el_dashboard.Item("tile_doc", 0, 0, 4, 2),
+                el_dashboard.Item("tile_risk", 4, 0, 4, 2),
+                el_dashboard.Item("tile_sum", 8, 0, 4, 2),
+                el_dashboard.Item("tile_kpi", 0, 2, 6, 5),
+                el_dashboard.Item("tile_chart", 6, 2, 6, 5),
+                el_dashboard.Item("tile_dates", 0, 7, 7, 5),
+                el_dashboard.Item("tile_table", 7, 7, 5, 5),
+            ],
+        )
 
-    if kpis:
-        st.markdown("### 🔑 KPIs")
-        cols = st.columns(3)
-        for i, kpi in enumerate(kpis[:9]):
-            with cols[i % 3]:
-                st.metric(
-                    str(kpi.get("label", "KPI"))[:40],
-                    str(kpi.get("value", "-"))[:28],
-                    (str(kpi.get("note", ""))[:38] if kpi.get("note") else None),
-                )
+        with elements("dash"):
+            with el_dashboard.Grid(st.session_state["dash_layout"], draggableHandle=".drag"):
+                # Doc type tile
+                with mui.Paper(key="tile_doc", className="tile", elevation=0):
+                    mui.Typography("Document Type", className="title")
+                    mui.Typography("Drag", className="drag")
+                    mui.Typography(str(doc_type_guess), variant="h5")
 
-    if derived:
-        st.markdown("### ✨ Derived Insights")
-        for d in derived[:10]:
-            st.markdown(f"- {d}")
+                # Risk tile
+                with mui.Paper(key="tile_risk", className="tile", elevation=0):
+                    mui.Typography("Risk Score", className="title")
+                    mui.Typography("Drag", className="drag")
+                    mui.Typography(f"{risk_score}/100", variant="h5")
 
+                # Summary tile
+                with mui.Paper(key="tile_sum", className="tile", elevation=0):
+                    mui.Typography("Executive Summary", className="title")
+                    mui.Typography("Drag", className="drag")
+                    mui.Typography(summary or "—", variant="body2")
+
+                # KPI tile
+                with mui.Paper(key="tile_kpi", className="tile", elevation=0):
+                    mui.Typography("KPIs", className="title")
+                    mui.Typography("Drag", className="drag")
+                    if kpis:
+                        for x in kpis[:9]:
+                            mui.Typography(f"• {x.get('label','KPI')}: {x.get('value','-')}", variant="body2")
+                    else:
+                        mui.Typography("No KPIs detected.", variant="body2")
+
+                    if derived:
+                        mui.Divider(sx={"my": 1})
+                        mui.Typography("Derived Insights", fontWeight=900, variant="body2")
+                        for d in derived[:6]:
+                            mui.Typography(f"• {d}", variant="body2")
+
+                # Chart tile (kept as normal Streamlit charts below to avoid breaking logic)
+                with mui.Paper(key="tile_chart", className="tile", elevation=0):
+                    mui.Typography("Charts", className="title")
+                    mui.Typography("Drag", className="drag")
+                    mui.Typography("Charts render below (Streamlit) for stability.", variant="body2")
+
+                # Dates tile
+                with mui.Paper(key="tile_dates", className="tile", elevation=0):
+                    mui.Typography("Key Dates", className="title")
+                    mui.Typography("Drag", className="drag")
+                    if local_dates:
+                        for d in local_dates[:10]:
+                            mui.Typography(f"• {d.get('value','')} — {d.get('label','')}", variant="body2")
+                    else:
+                        mui.Typography("No dates detected.", variant="body2")
+
+                # Table tile
+                with mui.Paper(key="tile_table", className="tile", elevation=0):
+                    mui.Typography("Table Preview", className="title")
+                    mui.Typography("Drag", className="drag")
+                    if table_previews:
+                        mui.Typography("Excel previews shown below.", variant="body2")
+                    elif dash_table_preview:
+                        mui.Typography("Dashboard preview shown below.", variant="body2")
+                    elif local_dash.get("table_preview"):
+                        mui.Typography("Local preview shown below.", variant="body2")
+                    else:
+                        mui.Typography("No table-like rows detected.", variant="body2")
+
+    else:
+        # Fallback (your existing layout, unchanged)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Doc Type (Nova)", str(doc_type_guess))
+        c2.metric("Risk Score", f"{risk_score}/100")
+        with c3:
+            st.caption("Risk Meter")
+            st.progress(min(max(risk_score, 0), 100))
+
+        if summary.strip():
+            st.markdown("### 🧾 Executive Summary")
+            st.markdown(summary)
+
+        if kpis:
+            st.markdown("### 🔑 KPIs")
+            cols = st.columns(3)
+            for i, kpi in enumerate(kpis[:9]):
+                with cols[i % 3]:
+                    st.metric(
+                        str(kpi.get("label", "KPI"))[:40],
+                        str(kpi.get("value", "-"))[:28],
+                        (str(kpi.get("note", ""))[:38] if kpi.get("note") else None),
+                    )
+
+        if derived:
+            st.markdown("### ✨ Derived Insights")
+            for d in derived[:10]:
+                st.markdown(f"- {d}")
+
+    # Keep charts exactly as your logic (Streamlit rendering)
     if charts:
         st.markdown("### 📈 Auto Charts")
         for ch in charts[:4]:
@@ -1095,7 +1262,6 @@ if mode == "Single Document":
     # ============================================================
     st.markdown("### ✨ Nova-suggested questions (auto from your document)")
 
-    # user_interest removed => fixed as "General"
     suggest_fp = f"{doc_fp}:General"
     if st.session_state.get("suggest_fp") != suggest_fp:
         st.session_state["suggest_fp"] = suggest_fp
@@ -1207,3 +1373,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
+# Handle reset rerun flag (no callback rerun warnings)
+if st.session_state.pop("_do_rerun", False):
+    st.rerun()
