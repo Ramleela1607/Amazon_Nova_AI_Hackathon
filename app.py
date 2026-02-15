@@ -1079,19 +1079,61 @@ if mode == "Single Document":
 
         if kpis:
             st.markdown("### 🔑 KPIs")
-            cols = st.columns(3)
-            for i, kpi in enumerate(kpis[:9]):
-                with cols[i % 3]:
-                    st.metric(
-                        str(kpi.get("label", "KPI"))[:40],
-                        str(kpi.get("value", "-"))[:28],
-                        (str(kpi.get("note", ""))[:38] if kpi.get("note") else None),
+        
+            if ELEMENTS_OK:
+                # 🔥 Draggable layout
+                from streamlit_elements import elements, mui, dashboard
+        
+                layout = []
+                for i, kpi in enumerate(kpis[:6]):
+                    layout.append(
+                        dashboard.Item(
+                            str(i),
+                            x=(i % 3) * 4,
+                            y=(i // 3) * 2,
+                            w=4,
+                            h=2,
+                        )
                     )
+        
+                with elements("kpi_dashboard"):
+                    with dashboard.Grid(layout):
+                        for i, kpi in enumerate(kpis[:6]):
+                            with mui.Paper(
+                                key=str(i),
+                                elevation=4,
+                                sx={
+                                    "padding": 2,
+                                    "borderRadius": 3,
+                                    "background": "linear-gradient(135deg,#ffffff,#f1f5f9)",
+                                },
+                            ):
+                                mui.Typography(
+                                    str(kpi.get("label", "KPI"))[:40],
+                                    variant="subtitle2",
+                                    sx={"opacity": 0.7},
+                                )
+                                mui.Typography(
+                                    str(kpi.get("value", "-")),
+                                    variant="h5",
+                                    sx={"fontWeight": 700},
+                                )
+            else:
+                # fallback normal Streamlit layout
+                cols = st.columns(3)
+                for i, kpi in enumerate(kpis[:9]):
+                    with cols[i % 3]:
+                        st.metric(
+                            str(kpi.get("label", "KPI"))[:40],
+                            str(kpi.get("value", "-"))[:28],
+                            (str(kpi.get("note", ""))[:38] if kpi.get("note") else None),
+                        )
 
-        if derived:
-            st.markdown("### ✨ Derived Insights")
-            for d in derived[:10]:
-                st.markdown(f"- {d}")
+
+    if derived:
+        st.markdown("### ✨ Derived Insights")
+        for d in derived[:10]:
+            st.markdown(f"- {d}")
 
     if charts:
         st.markdown("### 📈 Auto Charts")
@@ -1316,5 +1358,6 @@ else:
 
 if st.session_state.pop("_do_rerun", False):
     st.rerun()
+
 
 
