@@ -1210,7 +1210,11 @@ if mode == "Single Document":
             ai_dash = {}
             if len(full_text.strip()) >= 80:
                 try:
-                    ai_dash = generate_dashboard_insights_dynamic(full_text) or {}
+                    lang = st.session_state.get("doc_language", "English")
+                    ai_dash = generate_dashboard_insights_dynamic(
+                        full_text,
+                        output_language=lang
+                    ) or {}
                 except Exception:
                     ai_dash = {
                         "doc_type_guess": "generic",
@@ -1521,6 +1525,7 @@ else:
 # Handle reset rerun flag (no callback rerun warnings)
 if st.session_state.pop("_do_rerun", False):
     st.rerun()
+
 
 
 
