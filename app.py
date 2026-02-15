@@ -68,42 +68,27 @@ st.markdown(
 )
 
 # ============================================================
-# State init
-# ============================================================
-st.session_state.setdefault("uploader_key", 0)
-st.session_state.setdefault("dash_nonce", {})  # per-doc refresh nonce
-
-# ============================================================
-# Reset session (FIXES your crash)
+# Reset (FIXES YOUR ERROR)
 # ============================================================
 def reset_session():
-    """
-    Clears Streamlit session keys that affect caching/results.
-    Also bumps uploader_key so file_uploader resets.
-    """
     st.session_state["uploader_key"] = st.session_state.get("uploader_key", 0) + 1
 
-    keys_to_drop = [
-        "single_rag", "index_fp",
-        "last_doc_id",
-        "auto_rag_settings",
-        "suggested_questions",
-        "latest_answer", "latest_evidence", "latest_sources", "latest_q", "latest_rt",
+    # wipe known keys
+    wipe = [
+        "single_rag", "index_fp", "auto_rag_settings", "last_doc_id",
+        "suggested_questions", "pending_question",
+        "latest_q", "latest_answer", "latest_evidence", "latest_sources", "latest_rt",
         "rag_a", "rag_b",
-        "pending_question",
     ]
-    for k in keys_to_drop:
+    for k in wipe:
         st.session_state.pop(k, None)
 
-    # clear caches (dashboard, dates, extracted text)
+    # wipe caches
     for k in list(st.session_state.keys()):
-        if str(k).startswith((
-            "dashboard:", "dates:",
-            "pdf_text:", "img_insights:",
-        )):
+        if str(k).startswith(("pdf_text:", "img_insights:", "dashboard:", "dates:", "csv:", "excel:")):
             st.session_state.pop(k, None)
 
-    # keep dash_nonce dict but clear it
+    # reset dashboard nonce map
     st.session_state["dash_nonce"] = {}
 
     st.rerun()
@@ -203,8 +188,8 @@ def normalize_image_to_png_bytes(img_bytes: bytes) -> bytes:
 def extract_text_from_image(img_bytes: bytes) -> Tuple[str, str]:
     png_bytes = normalize_image_to_png_bytes(img_bytes)
     img_fp = hashlib.md5(png_bytes[:20000]).hexdigest()
-    insights_key = f"img_insights:{img_fp}"
 
+    insights_key = f"img_insights:{img_fp}"
     if insights_key not in st.session_state:
         try:
             st.session_state[insights_key] = nova_image_insights_brief(png_bytes, image_format="png") or ""
@@ -221,21 +206,37 @@ def extract_text_from_image(img_bytes: bytes) -> Tuple[str, str]:
     return ocr.strip(), insights.strip()
 
 # ============================================================
-# CSV / Excel extraction (robust)
+# Excel/CSV extraction (robust)
 # ============================================================
 def read_csv_bytes(csv_bytes: bytes) -> Tuple[str, Optional[pd.DataFrame]]:
+    cache_key = "csv:" + sha1_bytes(csv_bytes[:400000])
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+
+    df = None
     for enc in ["utf-8", "utf-8-sig", "cp1252", "latin1"]:
         try:
             df = pd.read_csv(io.BytesIO(csv_bytes), encoding=enc)
             if df is not None and not df.empty:
-                df = df.dropna(how="all")
-                text = df.head(40).to_csv(index=False)
-                return text.strip(), df
+                break
         except Exception:
-            continue
-    return "", None
+            df = None
+
+    if df is None or df.empty:
+        st.session_state[cache_key] = ("", None)
+        return "", None
+
+    df = df.dropna(how="all")
+    text = df.head(40).to_csv(index=False)
+
+    st.session_state[cache_key] = (text.strip(), df)
+    return text.strip(), df
 
 def read_excel_bytes(excel_bytes: bytes, filename: str) -> Tuple[str, Dict[str, pd.DataFrame], str]:
+    cache_key = "excel:" + sha1_bytes(excel_bytes[:400000])
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+
     warning = ""
     tables: Dict[str, pd.DataFrame] = {}
     text_parts: List[str] = []
@@ -256,29 +257,17 @@ def read_excel_bytes(excel_bytes: bytes, filename: str) -> Tuple[str, Dict[str, 
                 except Exception:
                     continue
         except Exception as e:
-            warning = f"Excel read failed (xlsx). Error: {e}"
+            warning = f"Excel read failed (.xlsx). Error: {e}"
 
     elif ext == "xls":
-        try:
-            xls = pd.ExcelFile(io.BytesIO(excel_bytes), engine="xlrd")
-            for sh in xls.sheet_names:
-                try:
-                    df = pd.read_excel(xls, sheet_name=sh, engine="xlrd")
-                    df = df.dropna(how="all")
-                    if df is not None and not df.empty:
-                        tables[sh] = df
-                        text_parts.append(f"--- Sheet: {sh} ---")
-                        text_parts.append(df.head(30).to_csv(index=False))
-                except Exception:
-                    continue
-        except Exception:
-            warning = "Legacy .xls detected. Install `xlrd` or save as .xlsx and re-upload."
-
+        warning = "Legacy .xls detected. Please save as .xlsx (recommended) OR install `xlrd` and enable xls support."
     else:
-        warning = "Unsupported Excel extension. Upload .xlsx/.xlsm or .xls (requires xlrd)."
+        warning = "Unsupported Excel extension. Upload .xlsx/.xlsm (recommended)."
 
     extracted_text = "\n".join(text_parts).strip()
-    return extracted_text, tables, warning
+    result = (extracted_text, tables, warning)
+    st.session_state[cache_key] = result
+    return result
 
 # ============================================================
 # Dates
@@ -306,6 +295,7 @@ def extract_dates_with_events(text: str, max_items: int = 120) -> List[Dict[str,
 
     results = []
     seen = set()
+
     for line in t.split("\n"):
         ln = line.strip()
         if not ln:
@@ -313,20 +303,25 @@ def extract_dates_with_events(text: str, max_items: int = 120) -> List[Dict[str,
         for m in date_re.finditer(ln):
             ds = m.group(0).strip()
             ev = (ln[:m.start()].strip() or ln[m.end():].strip())
-            ev = re.sub(r"\s+", " ", ev).strip(" -:•;|") or "Date mentioned"
+            ev = re.sub(r"\s+", " ", ev).strip(" -:•;|")
+            if not ev:
+                ev = "Date mentioned"
+
             key = (ev.lower(), ds.lower())
             if key in seen:
                 continue
             seen.add(key)
+
             results.append({"label": ev[:70], "value": ds})
             if len(results) >= max_items:
                 break
         if len(results) >= max_items:
             break
+
     return results
 
 # ============================================================
-# Dashboard (local + AI + salvage JSON)
+# Dashboard (local mining + AI merge)
 # ============================================================
 def local_dashboard_from_text(text: str, max_items: int = 80) -> Dict[str, Any]:
     out = {"kpis": [], "charts": [], "table_preview": [], "derived_insights": []}
@@ -374,6 +369,7 @@ def local_dashboard_from_text(text: str, max_items: int = 80) -> Dict[str, Any]:
         numeric_items.append((label, num, val))
 
     numeric_sorted = sorted(numeric_items, key=lambda x: abs(x[1]), reverse=True)
+
     for label, _num, raw in numeric_sorted[:9]:
         out["kpis"].append({"label": label[:40], "value": raw, "note": ""})
 
@@ -423,7 +419,7 @@ def local_dashboard_from_excel_tables(tables: Dict[str, pd.DataFrame]) -> Dict[s
         chart_data = [{"x": lbl[:28], "y": float(v)} for lbl, v in numeric_points[:12]]
         out["charts"].append({"title": "Top Excel Metrics (Auto)", "type": "bar", "data": chart_data})
 
-    out["derived_insights"].append(f"Parsed {len(tables)} sheets. Computed summaries from numeric columns.")
+    out["derived_insights"].append(f"Parsed {len(tables)} sheets and computed numeric summaries.")
     return out
 
 def salvage_json(txt: str) -> Optional[Dict[str, Any]]:
@@ -462,9 +458,8 @@ def merge_ai_and_local(ai: Dict[str, Any], local: Dict[str, Any]) -> Dict[str, A
     if not isinstance(merged.get("derived_insights"), list) or not merged.get("derived_insights"):
         merged["derived_insights"] = local.get("derived_insights", [])
 
-    if not merged.get("summary") or "could not" in str(merged.get("summary", "")).lower():
-        if local.get("kpis") or local.get("charts"):
-            merged["summary"] = "Auto dashboard generated from detected signals in the document."
+    if (not merged.get("summary")) and (local.get("kpis") or local.get("charts")):
+        merged["summary"] = "Auto dashboard generated from detected signals in the document."
     return merged
 
 # ============================================================
@@ -485,18 +480,22 @@ def make_pdf_report(filename: str, title: str, sections: List[Tuple[str, str]]) 
         return f.read()
 
 # ============================================================
-# Sidebar
+# Session init + Sidebar
 # ============================================================
+st.session_state.setdefault("uploader_key", 0)
+st.session_state.setdefault("dash_nonce", {})
+
 st.sidebar.header("⚙️ Controls")
 st.sidebar.button("🔄 Reset / New session", on_click=reset_session, use_container_width=True)
 
 mode = st.sidebar.radio("Mode", ["Single Document", "Compare Two Documents"])
-
 st.sidebar.markdown("---")
+
 st.sidebar.subheader("🧠 Dashboard Controls")
 use_ai_dashboard = st.sidebar.toggle("Use AI Dashboard (Nova)", value=True)
 lazy_ai = st.sidebar.toggle("Lazy AI (fast first render)", value=True)
 show_debug = st.sidebar.toggle("Show debug (text preview)", value=False)
+
 st.sidebar.markdown("---")
 
 # ============================================================
@@ -571,7 +570,7 @@ if mode == "Single Document":
     img_insights = ""
     csv_df: Optional[pd.DataFrame] = None
 
-    t_start = time.time()
+    t0 = time.time()
 
     if uploaded is not None and file_bytes:
         if ext == "pdf":
@@ -587,12 +586,16 @@ if mode == "Single Document":
                 extracted_text, excel_tables, warn = read_excel_bytes(file_bytes, filename)
             if warn:
                 st.warning(warn)
+            if not excel_tables and not extracted_text.strip():
+                st.error("Could not read Excel content. Try saving as .xlsx (not .xls) and re-upload.")
+                st.stop()
 
         elif ext == "csv":
             with st.spinner("Reading CSV..."):
                 extracted_text, csv_df = read_csv_bytes(file_bytes)
             if csv_df is None:
-                st.warning("Could not read CSV content. Try saving as UTF-8 and re-upload.")
+                st.error("Could not read CSV content. Try saving as UTF-8 and re-upload.")
+                st.stop()
 
         elif ext == "docx":
             try:
@@ -600,8 +603,8 @@ if mode == "Single Document":
                 doc = Document(io.BytesIO(file_bytes))
                 extracted_text = "\n".join([p.text for p in doc.paragraphs if p.text and p.text.strip()]).strip()
             except Exception:
+                st.error("DOCX read failed. Ensure file is valid.")
                 extracted_text = ""
-                st.warning("DOCX read failed. Ensure `python-docx` is installed and file is valid.")
 
         elif ext == "pptx":
             try:
@@ -614,11 +617,13 @@ if mode == "Single Document":
                             parts.append(f"[Slide {si}] {shape.text.strip()}")
                 extracted_text = "\n".join(parts).strip()
             except Exception:
+                st.error("PPTX read failed. Export PPT as PDF and upload.")
                 extracted_text = ""
-                st.warning("PPTX read failed. Ensure `python-pptx` is installed or export PPT as PDF and upload.")
 
         elif ext == "txt":
             extracted_text = file_bytes.decode("utf-8", errors="ignore").strip()
+
+    extract_secs = round(time.time() - t0, 2)
 
     parts = []
     if extracted_text.strip():
@@ -629,9 +634,8 @@ if mode == "Single Document":
         parts.append("=== USER NOTES ===\n" + user_text.strip())
 
     full_text = "\n\n".join(parts).strip()
-    extract_secs = round(time.time() - t_start, 2)
 
-    # Previews
+    # Excel preview
     if excel_tables:
         st.markdown("### 📊 Excel Preview")
         sheet_names = list(excel_tables.keys())
@@ -659,12 +663,15 @@ if mode == "Single Document":
     if show_debug:
         with st.expander("🔎 Debug", expanded=False):
             st.write("Filename:", filename)
+            st.write("Ext:", ext)
             st.write("File hash:", file_hash)
             st.write("Extract seconds:", extract_secs)
             st.write("Extracted text length:", len(full_text))
             st.write((full_text[:1400] + "...") if len(full_text) > 1400 else full_text)
 
-    # Cache key using file + text hash + nonce
+    # ============================
+    # Stable doc_id + refresh nonce
+    # ============================
     text_hash = md5_text(full_text[:30000])
     doc_id = f"{file_hash}:{text_hash}"
 
@@ -674,23 +681,29 @@ if mode == "Single Document":
     dash_key = f"dashboard:{doc_id}:n={nonce}"
     dates_key = f"dates:{doc_id}:n={nonce}"
 
-    # Dates
+    # Dates cache
     if dates_key not in st.session_state:
         st.session_state[dates_key] = extract_dates_with_events(full_text, max_items=120)
     local_dates = st.session_state.get(dates_key, [])
 
-    # Dashboard
+    # ============================
+    # Executive Dashboard
+    # ============================
     st.subheader("📊 Executive Dashboard")
-    cbtn1, _ = st.columns([1, 6])
+
+    cbtn1, cbtn2 = st.columns([1, 6])
     with cbtn1:
         if st.button("🔄 Refresh Dashboard", use_container_width=True):
             st.session_state["dash_nonce"][doc_id] += 1
             st.rerun()
 
     # Local dashboard always
-    local_dash = local_dashboard_from_excel_tables(excel_tables) if excel_tables else local_dashboard_from_text(full_text)
+    if excel_tables:
+        local_dash = local_dashboard_from_excel_tables(excel_tables)
+    else:
+        local_dash = local_dashboard_from_text(full_text)
 
-    # AI dashboard optional
+    # AI dashboard (optional)
     run_ai_now = False
     if use_ai_dashboard:
         run_ai_now = True if not lazy_ai else st.button("⚡ Run AI Dashboard (Nova)", use_container_width=True)
@@ -701,12 +714,15 @@ if mode == "Single Document":
             with st.spinner("🧠 Nova generating AI dashboard..."):
                 try:
                     raw = generate_dashboard_insights_dynamic(full_text)
-                    ai_dash = raw if isinstance(raw, dict) else (salvage_json(str(raw)) or {})
+                    if isinstance(raw, dict):
+                        ai_dash = raw
+                    else:
+                        ai_dash = salvage_json(str(raw)) or {}
                 except Exception:
                     ai_dash = {}
         st.session_state[dash_key] = ai_dash
 
-    dashboard = merge_ai_and_local(st.session_state.get(dash_key, {}) or {}, local_dash)
+    dashboard = merge_ai_and_local(st.session_state.get(dash_key, {}), local_dash)
 
     summary = dashboard.get("summary", "") or ""
     doc_type_guess = dashboard.get("doc_type_guess", "generic")
@@ -735,8 +751,11 @@ if mode == "Single Document":
         cols = st.columns(3)
         for i, kpi in enumerate(kpis[:9]):
             with cols[i % 3]:
-                st.metric(str(kpi.get("label", "KPI"))[:40], str(kpi.get("value", "-")),
-                          (str(kpi.get("note", ""))[:40] if kpi.get("note") else None))
+                st.metric(
+                    str(kpi.get("label", "KPI"))[:40],
+                    str(kpi.get("value", "-")),
+                    (str(kpi.get("note", ""))[:40] if kpi.get("note") else None),
+                )
 
     if derived:
         st.markdown("### ✨ Derived Insights")
@@ -788,12 +807,13 @@ if mode == "Single Document":
 
     st.divider()
 
-    # RAG settings + index
+    # ============================
+    # Auto RAG settings + Index
+    # ============================
     if st.session_state.get("last_doc_id") != doc_id:
         st.session_state["last_doc_id"] = doc_id
         with st.spinner("⚙️ Auto-optimizing retrieval settings..."):
             st.session_state["auto_rag_settings"] = recommend_rag_settings(full_text)
-        st.session_state.pop("suggested_questions", None)
         st.session_state.pop("index_fp", None)
 
     rec = st.session_state.get("auto_rag_settings", {"chunk_size": 1000, "overlap": 150, "top_k": 4})
@@ -801,7 +821,9 @@ if mode == "Single Document":
 
     build_index_if_needed(full_text, chunk_size=chunk_size, overlap=overlap)
 
-    # Extract fields
+    # ============================
+    # Extract fields JSON
+    # ============================
     st.subheader("2) Extract key fields (JSON)")
     doc_type = st.selectbox("Document type", DOC_TYPES, index=0)
     if st.button("🧾 Extract key fields as JSON", use_container_width=True):
@@ -811,7 +833,9 @@ if mode == "Single Document":
 
     st.divider()
 
-    # Suggested questions (manual trigger)
+    # ============================
+    # Suggested questions (manual)
+    # ============================
     st.markdown("### ✨ Nova-suggested questions")
     if st.button("💡 Generate suggested questions", use_container_width=True):
         with st.spinner("Generating questions..."):
@@ -828,7 +852,9 @@ if mode == "Single Document":
 
     st.divider()
 
+    # ============================
     # Chat
+    # ============================
     st.subheader("3) Chat with your document")
     pending = st.session_state.pop("pending_question", "")
     if pending:
@@ -850,39 +876,8 @@ if mode == "Single Document":
                 st.markdown(st.session_state["latest_evidence"])
         st.caption(f"⏱ Response time: {st.session_state.get('latest_rt', 0)} sec")
 
-    st.divider()
-
-    # Export PDF report
-    st.subheader("4) Export report (PDF)")
-    if st.button("📄 Generate PDF report", use_container_width=True):
-        with st.spinner("Creating a title..."):
-            report_title = generate_report_title(full_text)
-        auto_type = detect_doc_type(full_text)
-
-        latest_block = ""
-        if st.session_state.get("latest_answer"):
-            latest_block = (
-                f"Question: {st.session_state.get('latest_q','')}\n\n"
-                f"Answer:\n{st.session_state.get('latest_answer','')}\n\n"
-                f"Evidence:\n{st.session_state.get('latest_evidence','')}\n"
-            )
-
-        sections = [
-            ("Report title (generated)", report_title),
-            ("Document type (auto)", auto_type),
-            ("Extracted text preview (first 1200 chars)", full_text[:1200]),
-            ("Latest Q&A", latest_block or "No Q&A yet."),
-        ]
-
-        safe_filename = "".join(ch for ch in report_title if ch.isalnum() or ch in (" ", "-", "_")).strip()
-        safe_filename = safe_filename.replace(" ", "_") or "Smart_Document_Report"
-        file_name = f"{safe_filename}.pdf"
-
-        pdf_bytes = make_pdf_report(file_name, report_title, sections)
-        st.download_button("⬇️ Download report", data=pdf_bytes, file_name=file_name, mime="application/pdf", use_container_width=True)
-
 # ============================================================
-# Compare Mode
+# Mode: Compare Two Docs (PDF)
 # ============================================================
 else:
     st.subheader("🆚 Compare Two PDFs")
@@ -940,3 +935,4 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
