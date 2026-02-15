@@ -4,7 +4,7 @@ import json
 import hashlib
 import re
 from typing import List, Dict, Any, Tuple, Optional
-
+from langdetect import detect
 import streamlit as st
 import pandas as pd
 from pypdf import PdfReader
@@ -239,10 +239,10 @@ a { color: #1d4ed8 !important; }
     unsafe_allow_html=True,
 )
 
-st.title("📄 Smart Document Copilot")
+st.title("🚀 InsightForge AI")
 st.markdown(
-    "<div class='pill'><b>Amazon Nova</b> • Bedrock • Multimodal • RAG • Evidence • Dashboard • Compare • Report</div>"
-    "<div class='small-muted'>Bright Neon Glass UI • Clean Stable Dashboard • Excel KPI Fix</div>",
+    "<div class='pill'><b>Multilingual AI Intelligence Engine</b> • Nova • RAG • Dashboard • Compare • Reports</div>"
+    "<div class='small-muted'>Upload any document. Get instant executive intelligence.</div>",
     unsafe_allow_html=True,
 )
 
@@ -1482,4 +1482,5 @@ else:
 # Handle reset rerun flag (no callback rerun warnings)
 if st.session_state.pop("_do_rerun", False):
     st.rerun()
+
 
