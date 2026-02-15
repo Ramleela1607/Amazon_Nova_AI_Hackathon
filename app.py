@@ -597,6 +597,88 @@ if mode == "Single Document":
         st.info("Upload a file (PDF/Image/Word/PPT/Excel/CSV/TXT) or paste text → Dashboard + Chat will appear.")
         st.stop()
 
+    full_text_parts = []
+    if uploaded_file is not None:
+        name = uploaded_file.name.lower()
+    
+        with st.spinner("Extracting document text..."):
+            if name.endswith(".pdf"):
+                pdf_text = extract_text_from_pdf_with_ocr(uploaded_file, max_ocr_pages=6)
+                if pdf_text.strip():
+                    full_text_parts.append("=== PDF TEXT ===\n" + pdf_text)
+    
+            elif name.endswith((".png", ".jpg", ".jpeg", ".webp")):
+                img_bytes = normalize_image_to_png_bytes(uploaded_file)
+    
+                # (optional) insights
+                img_fp = hashlib.md5(img_bytes[:20000]).hexdigest()
+                img_cache_key = f"img_insights:{img_fp}"
+                if img_cache_key not in st.session_state:
+                    try:
+                        st.session_state[img_cache_key] = nova_image_insights_brief(img_bytes, image_format="png")
+                    except Exception:
+                        st.session_state[img_cache_key] = ""
+    
+                insights = st.session_state.get(img_cache_key, "")
+                if insights.strip():
+                    st.subheader("Insights")
+                    st.markdown(insights.replace("\n", "  \n"))
+                    full_text_parts.append("=== IMAGE INSIGHTS ===\n" + insights)
+    
+                # OCR text
+                try:
+                    ocr_text = nova_image_to_text(img_bytes, image_format="png")
+                except Exception:
+                    ocr_text = ""
+                if ocr_text.strip():
+                    full_text_parts.append("=== IMAGE TEXT ===\n" + ocr_text)
+    
+            elif name.endswith((".xlsx", ".xls")):
+                excel_text = extract_text_from_excel(uploaded_file)
+                if excel_text.strip():
+                    full_text_parts.append("=== EXCEL TEXT ===\n" + excel_text)
+                else:
+                    st.warning("Could not read Excel. Try re-saving as .xlsx.")
+    
+            elif name.endswith(".docx"):
+                try:
+                    import docx
+                    doc = docx.Document(uploaded_file)
+                    txt = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+                except Exception:
+                    txt = ""
+                if txt.strip():
+                    full_text_parts.append("=== WORD TEXT ===\n" + txt)
+                else:
+                    st.warning("Could not extract Word text.")
+    
+            elif name.endswith(".pptx"):
+                try:
+                    from pptx import Presentation
+                    prs = Presentation(uploaded_file)
+                    slides_txt = []
+                    for i, slide in enumerate(prs.slides, start=1):
+                        for shape in slide.shapes:
+                            if hasattr(shape, "text") and shape.text.strip():
+                                slides_txt.append(f"[Slide {i}] {shape.text.strip()}")
+                    txt = "\n".join(slides_txt)
+                except Exception:
+                    txt = ""
+                if txt.strip():
+                    full_text_parts.append("=== PPT TEXT ===\n" + txt)
+                else:
+                    st.warning("Could not extract PPT text.")
+    
+    if user_text.strip():
+        full_text_parts.append("=== USER NOTES ===\n" + user_text.strip())
+    
+    full_text = "\n\n".join(full_text_parts).strip()
+    
+    if not full_text:
+        st.error("No text extracted. Try a clearer document or different format.")
+        st.stop()
+
+
     full_text_parts: List[str] = []
     file_bytes_for_fp: Optional[bytes] = None
 
@@ -1019,6 +1101,7 @@ else:
 
         st.markdown("### ✅ Comparison result")
         st.write(out)
+
 
 
 
