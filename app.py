@@ -855,6 +855,41 @@ def make_pdf_report(
     with open(path, "rb") as f:
         return f.read()
 
+def detect_document_language(text: str) -> str:
+    """
+    Detect document language.
+    Works for Tamil, Hindi, French, German, Spanish, etc.
+    """
+    try:
+        if not text or len(text.strip()) < 50:
+            return "English"
+
+        code = detect(text)
+
+        lang_map = {
+            "en": "English",
+            "hi": "Hindi",
+            "ta": "Tamil",
+            "te": "Telugu",
+            "ml": "Malayalam",
+            "kn": "Kannada",
+            "fr": "French",
+            "de": "German",
+            "es": "Spanish",
+            "it": "Italian",
+            "pt": "Portuguese",
+            "zh-cn": "Chinese",
+            "zh-tw": "Chinese",
+            "ja": "Japanese",
+            "ko": "Korean",
+            "ar": "Arabic",
+            "ru": "Russian"
+        }
+
+        return lang_map.get(code.lower(), "English")
+
+    except Exception:
+        return "English"
 
 def reset_session():
     st.session_state["uploader_key"] = st.session_state.get("uploader_key", 0) + 1
@@ -1482,5 +1517,6 @@ else:
 # Handle reset rerun flag (no callback rerun warnings)
 if st.session_state.pop("_do_rerun", False):
     st.rerun()
+
 
 
